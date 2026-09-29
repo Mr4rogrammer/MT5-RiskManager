@@ -2,7 +2,6 @@ from flask import Blueprint, request, jsonify
 import MetaTrader5 as mt5
 import math
 
-
 risk_bp = Blueprint("order", __name__)
 
 
@@ -127,7 +126,6 @@ def calculate_lot_size():
         lot = math.floor(lot / lot_step) * lot_step
 
         lot = round(lot, 8)
-
         return jsonify({
             "lotSize": lot
         }), 200

@@ -16,7 +16,8 @@ CONFIG = [
     },
     "accountConfig": {
         "maxDailyLoss": 50,
-        "minRiskReward": 1.5
+        "minRiskReward": 1.5,
+        "maxTradePerDay":2
     },
     "tradeConfig": [
         {
