@@ -6,6 +6,7 @@ import MetaTrader5 as mt5
 from flasgger import Swagger
 from werkzeug.middleware.proxy_fix import ProxyFix
 from swagger import swagger_config
+from auth import require_api_key
 
 # Import routes
 from routes.health import health_bp
@@ -23,6 +24,12 @@ app = Flask(__name__)
 app.config['PREFERRED_URL_SCHEME'] = 'https'
 
 swagger = Swagger(app, config=swagger_config)
+
+# ----------------------------------------------------------------
+# Register global authentication — runs before every request.
+# Public routes (health, swagger) are exempt (see auth.py).
+# ----------------------------------------------------------------
+app.before_request(require_api_key)
 
 # Register blueprints
 app.register_blueprint(health_bp)
