@@ -12,9 +12,8 @@ swagger_config = {
         "version": "1.0.0"
     },
     "basePath": "/",
-    "https": True,
     "schemes": [
-        "https"
+        "http"
     ],
     "securityDefinitions": {
         "ApiKeyAuth": {

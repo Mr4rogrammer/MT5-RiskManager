@@ -43,31 +43,9 @@ venv/
 env/
 ENV/
 
-# Next.js
-.next/
-out/
-node_modules/
-.pnp/
-.pnp.js
-
-# Production build files
-/build
-
-# Debug
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-
 # Local env files
 .env*.local
 .env
-
-# Vercel
-.vercel
-
-# TypeScript
-*.tsbuildinfo
-next-env.d.ts
 
 # IDEs and editors
 .idea/
@@ -80,15 +58,9 @@ next-env.d.ts
 .DS_Store
 Thumbs.db
 
-# Jupyter Notebook
-.ipynb_checkpoints
-
-# pyenv
-.python-version
-
 # Logs
 logs
 *.log
 
-# Database
-*.sqlite3
+# Docker
+config/
