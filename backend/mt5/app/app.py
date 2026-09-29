@@ -17,6 +17,7 @@ from routes.history import history_bp
 from routes.error import error_bp
 from routes.account import account_bp
 from routes.config import config_bp
+from routes.riskValue import risk_bp
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -41,6 +42,7 @@ app.register_blueprint(history_bp)
 app.register_blueprint(error_bp)
 app.register_blueprint(account_bp)
 app.register_blueprint(config_bp)
+app.register_blueprint(risk_bp)
 
 if __name__ == '__main__':
     if not mt5.initialize():
