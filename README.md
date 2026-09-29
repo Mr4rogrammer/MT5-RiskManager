@@ -1,145 +1,216 @@
-# MetaTrader5 Quant Server (Python)
+# MetaTrader5 Flask API Server
 
-A quantitative trading server built with Python that integrates MetaTrader 5 with Django and Flask, featuring automated trading algorithms, real-time position management, and comprehensive monitoring.
-
-## Author
-
-**Krishna Kumar Eswaran** — [krish110222002@gmail.com](mailto:krish110222002@gmail.com)
+A Flask REST API server running inside Wine that communicates directly with MetaTrader 5 via its Python API, exposing endpoints for data retrieval, order execution, position management, and trade history.
 
 ## Architecture
 
-The project consists of the following components:
-
-- **MT5 Flask API** — A Flask server running inside Wine that communicates directly with MetaTrader 5 via its Python API, exposing REST endpoints for data retrieval, order execution, position management, and trade history.
-- **Django Backend** — A Django REST Framework application that manages trade records, close price mutations, and orchestrates quantitative trading algorithms (mean reversion entry, trailing stops, close detection) via Celery task scheduling.
-- **PostgreSQL** — Database for persisting trade records and mutations.
-- **Redis** — Message broker for Celery workers and task scheduling.
-- **Celery / Celery Beat** — Asynchronous task execution and periodic scheduling for trading algorithms.
-- **Monitoring Stack** — Grafana, Prometheus, Loki, Promtail, cAdvisor, Node-Exporter, and Alertmanager for full observability.
-- **Traefik** — Reverse proxy with automatic HTTPS via Let's Encrypt.
+```
+┌──────────────────────────────────────┐
+│        Docker Container (Wine)       │
+│                                      │
+│  ┌────────────┐   ┌──────────────┐   │
+│  │ MT5 Terminal│◄─►│  Flask API   │   │
+│  │   (Wine)   │   │   :5001      │   │
+│  └────────────┘   └──────────────┘   │
+│                                      │
+│  VNC Web Access :3000                │
+└──────────────────────────────────────┘
+```
 
 ## Features
 
-- **Mean Reversion Algorithm** — Bollinger Band-based mean reversion entry signals across configurable trading pairs.
-- **Trailing Stop Management** — Multi-step trailing stop algorithm that dynamically adjusts stop-loss levels as profit increases.
-- **Trade Lifecycle Tracking** — Automatic detection of closed trades with database persistence of entry/exit details, PnL, and commissions.
-- **REST API** — Full CRUD access to trade history with filtering, pagination, and ordering via Django REST Framework.
-- **Swagger Documentation** — Auto-generated API documentation for the MT5 Flask API.
-- **Monitoring & Alerting** — Pre-configured Grafana dashboards for node metrics, container metrics, and log search with Prometheus alerting rules.
+- **Market Orders** — Place BUY/SELL orders with SL/TP, deviation, magic number, and filling type
+- **Position Management** — Close single/all positions, modify SL/TP, list open positions
+- **Market Data** — Fetch OHLCV bars by count or date range, symbol info, tick data
+- **Trade History** — Query deal and order history by ticket or date range
+- **API Key Authentication** — All endpoints (except health/swagger) require an API key
+- **Swagger Documentation** — Auto-generated API docs at `/apidocs/`
+- **VNC Access** — Web-based VNC to view the MT5 terminal GUI
 
-## Quick Start
+## Installation on Linux
 
 ### Prerequisites
 
-- Docker & Docker Compose
+- A Linux server (Ubuntu 20.04+ / Debian 11+ recommended)
 - A MetaTrader 5 broker account
 
-### Setup
+### Step 1 — Install Docker & Docker Compose
 
-1. Clone the repository:
+```bash
+# Update system
+sudo apt update && sudo apt upgrade -y
 
-   ```bash
-   git clone https://github.com/Mr4rogrammer/MT5-RiskManager
-   cd metatrader5-quant-server-python
-   ```
+# Install Docker
+curl -fsSL https://get.docker.com | sh
 
-2. Create your environment file:
+# Add your user to the docker group (so you don't need sudo)
+sudo usermod -aG docker $USER
 
-   ```bash
-   cp .env.example .env
-   # Edit .env with your broker credentials and domain settings
-   ```
+# Apply group change (or log out and back in)
+newgrp docker
 
-3. Create the Traefik network:
+# Verify Docker is working
+docker --version
+docker compose version
+```
 
-   ```bash
-   docker network create traefik-public
-   ```
+### Step 2 — Clone the Repository
 
-4. Start the stack:
+```bash
+git clone https://github.com/Mr4rogrammer/MT5-RiskManager
+cd metatrader5-server-python
+```
 
-   ```bash
-   docker-compose up -d
-   ```
+### Step 3 — Configure Environment
 
-5. Verify all containers are running:
+```bash
+cp .env.example .env
+nano .env
+```
 
-   ```bash
-   docker-compose ps
-   ```
+Edit the `.env` file:
 
-## Services & Endpoints
+```env
+CUSTOM_USER=admin
+PASSWORD=your-vnc-password
+MT5_API_PORT=5001
+MT5_API_KEY=your-secret-api-key-here
+```
 
-| Service         | Internal URL              | External Port |
-| --------------- | ------------------------- | ------------- |
-| MT5 VNC         | http://mt5:3000           | via Traefik   |
-| MT5 Flask API   | http://mt5:5001           | via Traefik   |
-| Django API      | http://django:8000        | 8000          |
-| Grafana         | http://grafana:3000       | 3000          |
-| Prometheus      | http://prometheus:9090    | 9090          |
-| Alertmanager    | http://alertmanager:9093  | 9093          |
-| Loki            | http://loki:3100          | 3100          |
-| Redis           | http://redis:6379         | 6379          |
+- `CUSTOM_USER` / `PASSWORD` — Credentials to access the VNC web UI
+- `MT5_API_KEY` — Any secret string you choose (used to authenticate API calls)
+
+### Step 4 — Build & Start
+
+```bash
+docker compose up -d --build
+```
+
+First build takes **10-15 minutes** (downloads Wine, Python 3.9, MT5 installer, Mono).
+
+Subsequent starts are fast because everything is cached in the `/config` volume.
+
+### Step 5 — Log in to MT5 via VNC
+
+1. Open your browser and go to: `http://your-server-ip:3000`
+2. Enter your VNC credentials (`CUSTOM_USER` / `PASSWORD` from `.env`)
+3. You will see the MT5 terminal running in a desktop environment
+4. **Log in to your broker account** inside the MT5 terminal (File → Login to Trade Account)
+5. Once connected, the Flask API can interact with MT5
+
+### Step 6 — Verify the API is Running
+
+```bash
+# Health check (no auth required)
+curl http://localhost:5001/health
+
+# Expected response:
+# {"mt5_connected": true, "mt5_initialized": true, "status": "healthy"}
+```
+
+### Step 7 — Start Using the API
+
+```bash
+# Get current positions
+curl -H "Authorization: Bearer your-secret-api-key-here" \
+  http://localhost:5001/get_positions
+
+# Place a trade
+curl -X POST http://localhost:5001/order \
+  -H "Authorization: Bearer your-secret-api-key-here" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "symbol": "EURUSD",
+    "volume": 0.01,
+    "type": "BUY",
+    "deviation": 20
+  }'
+```
+
+## Useful Commands
+
+```bash
+# View logs
+docker compose logs -f mt5
+
+# View MT5 setup log inside container
+docker exec mt5 cat /var/log/mt5_setup.log
+
+# Restart the container
+docker compose restart mt5
+
+# Stop everything
+docker compose down
+
+# Stop and remove all data (Wine prefix, MT5 installation)
+docker compose down -v
+
+# Rebuild from scratch
+docker compose up -d --build --force-recreate
+```
+
+## Endpoints
+
+| Port | Service         |
+| ---- | --------------- |
+| 3000 | MT5 VNC Web UI  |
+| 5001 | MT5 Flask API   |
 
 ## API Documentation
 
-- **MT5 Flask API Swagger**: `https://<API_DOMAIN>/apidocs/`
-- **Django REST API**: `https://<DJANGO_DOMAIN>/v1/`
-- **Django Admin**: `https://<DJANGO_DOMAIN>/admin/`
+- **Swagger UI**: `http://localhost:5001/apidocs/`
 
-## Project Structure
+### API Endpoints
 
-```
-├── backend/
-│   ├── django/                    # Django backend
-│   │   ├── app/
-│   │   │   ├── nexus/             # Trade models, views, serializers
-│   │   │   ├── quant/             # Trading algorithms & indicators
-│   │   │   │   ├── algorithms/
-│   │   │   │   │   ├── mean_reversion/  # Entry, trailing stop, config
-│   │   │   │   │   └── close/           # Close detection algorithm
-│   │   │   │   └── indicators/          # Technical indicators
-│   │   │   └── utils/             # Utilities (API clients, DB ops, math)
-│   │   ├── Dockerfile
-│   │   └── requirements.txt
-│   └── mt5/                       # MT5 Flask server (runs in Wine)
-│       ├── app/
-│       │   ├── routes/            # Flask API routes
-│       │   ├── app.py             # Flask application entry point
-│       │   ├── lib.py             # MT5 helper functions
-│       │   └── constants.py       # MT5 constants & enums
-│       ├── scripts/               # Setup & startup scripts
-│       └── Dockerfile
-├── monitoring/                    # Monitoring stack configs & dashboards
-│   ├── configs/                   # Grafana, Prometheus, Loki, etc.
-│   └── dashboards/                # Pre-built Grafana dashboards
-├── docker-compose.yml
-├── .env.example
-├── LICENSE
-└── README.md
+| Method | Endpoint                     | Description                          |
+| ------ | ---------------------------- | ------------------------------------ |
+| GET    | `/health`                    | Health check (public)                |
+| GET    | `/symbol_info_tick/<symbol>` | Latest tick (bid/ask/volume)         |
+| GET    | `/symbol_info/<symbol>`      | Full symbol metadata                 |
+| GET    | `/fetch_data_pos`            | OHLCV bars from current position     |
+| GET    | `/fetch_data_range`          | OHLCV bars within a date range       |
+| POST   | `/order`                     | Place a market order                 |
+| POST   | `/close_position`            | Close a specific position            |
+| POST   | `/close_all_positions`       | Close all positions (filterable)     |
+| POST   | `/modify_sl_tp`              | Modify SL/TP for a position          |
+| GET    | `/get_positions`             | List open positions                  |
+| GET    | `/positions_total`           | Count open positions                 |
+| GET    | `/get_deal_from_ticket`      | Deal details by ticket               |
+| GET    | `/get_order_from_ticket`     | Order details by ticket              |
+| GET    | `/history_deals_get`         | Deals in date range for a position   |
+| GET    | `/history_orders_get`        | Order history by ticket              |
+| GET    | `/last_error`                | MT5 last error code + message        |
+| GET    | `/last_error_str`            | MT5 last error as string             |
+
+### Authentication
+
+All endpoints except `/health` and `/apidocs/` require an API key via the `Authorization` header:
+
+```bash
+curl -H "Authorization: Bearer your-api-key" http://localhost:5001/get_positions
 ```
 
-## Trading Algorithm Configuration
+## Environment Variables
 
-Edit `backend/django/app/quant/algorithms/mean_reversion/config.py` to customize:
+| Variable       | Description                       |
+| -------------- | --------------------------------- |
+| `CUSTOM_USER`  | VNC username                      |
+| `PASSWORD`     | VNC password                      |
+| `MT5_API_PORT` | Flask API port (default: 5001)    |
+| `MT5_API_KEY`  | API key for authentication        |
 
-- **Trading pairs** — Symbols to trade
-- **Timeframe** — Chart timeframe for signal generation
-- **Capital per trade** — USD amount per position
-- **Leverage** — Trading leverage
-- **TP/SL multipliers** — Take profit and stop loss as a ratio of capital
-- **Trailing stop steps** — Multi-level trailing stop configuration
+## How It Works Inside
 
-## Monitoring
+When the container starts, it runs these steps in order:
 
-The monitoring stack provides:
+1. **Install Mono** — .NET runtime needed by MT5 (skipped if already installed)
+2. **Install MT5** — Downloads and installs MetaTrader 5 via Wine (skipped if already installed)
+3. **Install Python 3.9** — Installs Windows Python inside Wine (skipped if already installed)
+4. **Install Libraries** — Pip installs Flask, MetaTrader5, pandas, etc. inside Wine Python
+5. **Start MT5 Terminal** — Launches `terminal64.exe` via Wine
+6. **Start Flask API** — Runs `app.py` using Wine Python, listening on port 5001
 
-- **Node Metrics Dashboard** — CPU, memory, disk, and network metrics
-- **Container Metrics Dashboard** — Docker container resource usage
-- **Log Search Dashboard** — Centralized log search across all services
-- **Alerting Rules** — Pre-configured Prometheus alerts with Alertmanager routing
-
-Access Grafana at `http://localhost:3000` with default anonymous admin access.
+All MT5 data (Wine prefix, MT5 installation, broker login) is persisted in the `./config` volume.
 
 ## License
 

@@ -4,7 +4,6 @@ from flask import Flask
 from dotenv import load_dotenv
 import MetaTrader5 as mt5
 from flasgger import Swagger
-from werkzeug.middleware.proxy_fix import ProxyFix
 from swagger import swagger_config
 from auth import require_api_key
 
@@ -16,12 +15,14 @@ from routes.position import position_bp
 from routes.order import order_bp
 from routes.history import history_bp
 from routes.error import error_bp
+from routes.account import account_bp
+from routes.config import config_bp
+from routes.riskValue import risk_bp
 
 load_dotenv()
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-app.config['PREFERRED_URL_SCHEME'] = 'https'
 
 swagger = Swagger(app, config=swagger_config)
 
@@ -39,8 +40,9 @@ app.register_blueprint(position_bp)
 app.register_blueprint(order_bp)
 app.register_blueprint(history_bp)
 app.register_blueprint(error_bp)
-
-app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
+app.register_blueprint(account_bp)
+app.register_blueprint(config_bp)
+app.register_blueprint(risk_bp)
 
 if __name__ == '__main__':
     if not mt5.initialize():
