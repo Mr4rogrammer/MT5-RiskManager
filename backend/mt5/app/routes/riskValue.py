@@ -2,7 +2,7 @@ from flask import Blueprint, request, jsonify
 import MetaTrader5 as mt5
 import math
 
-risk_bp = Blueprint("order", __name__)
+risk_bp = Blueprint("lot-size", __name__)
 
 
 
