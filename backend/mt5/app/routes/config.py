@@ -10,35 +10,32 @@ logger = logging.getLogger(__name__)
 # ----------------------------------------------------------------
 CONFIG = [
     {
-        "symbol": "",
-        "maxRiskPerDay": 50,
+    "deviceConfig": {
+        "refreshInSeconds": 15,
+        "configVersion": 1,
+    },
+    "accountConfig": {
+        "maxDailyLoss": 50,
+        "minRiskReward": 1.5
+    },
+    "tradeConfig": [
+        {
+        "symbol": "EURUSD",
         "time": [
             {
-                "startTime": "03:00",
-                "endTime": "05:00",
-                "timeZone": "America/New_York",
-                "am/pm": "am"
+            "startTime": "03:00",
+            "endTime": "05:00",
+            "timeZone": "America/New_York"
             },
             {
-                "startTime": "03:00",
-                "endTime": "05:00",
-                "timeZone": "America/New_York",
-                "am/pm": "am"
+            "startTime": "09:30",
+            "endTime": "11:00",
+            "timeZone": "America/New_York"
             }
         ]
-    },
-    {
-        "symbol": "",
-        "maxRiskPerDay": 50,
-        "time": [
-            {
-                "startTime": "03:00",
-                "endTime": "05:00",
-                "timeZone": "America/New_York",
-                "am/pm": "am"
-            }
-        ]
-    }
+        }
+  ]
+}
 ]
 
 @config_bp.route('/config', methods=['GET'])
