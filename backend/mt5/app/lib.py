@@ -71,48 +71,59 @@ def close_position(position, deviation=20, magic=0, comment='', type_filling=mt5
     return order_result
 
 
-def close_all_positions(order_type='all', magic=None, type_filling=mt5.ORDER_FILLING_IOC):
-    order_type_dict = {
-        'BUY': mt5.ORDER_TYPE_BUY,
-        'SELL': mt5.ORDER_TYPE_SELL
-    }
+def close_all_positions():
+    positions = mt5.positions_get()
 
-    if mt5.positions_total() > 0:
-        positions = mt5.positions_get()
-        if positions is None:
-            logger.error("Failed to retrieve positions.")
-            return []
-
-        positions_data = [pos._asdict() for pos in positions]
-        positions_df = pd.DataFrame(positions_data)
-
-        # Filtering by magic if specified
-        if magic is not None:
-            positions_df = positions_df[positions_df['magic'] == magic]
-
-        # Filtering by order_type if not 'all'
-        if order_type != 'all':
-            if order_type not in order_type_dict:
-                logger.error(f"Invalid order_type: {order_type}. Must be 'BUY', 'SELL', or 'all'.")
-                return []
-            positions_df = positions_df[positions_df['type'] == order_type_dict[order_type]]
-
-        if positions_df.empty:
-            logger.error('No open positions matching the criteria.')
-            return []
-
-        results = []
-        for _, position in positions_df.iterrows():
-            order_result = close_position(position, type_filling=type_filling)
-            if order_result:
-                results.append(order_result)
-            else:
-                logger.error(f"Failed to close position {position['ticket']}.")
-        
-        return results
-    else:
-        logger.error("No open positions to close.")
+    if positions is None:
+        logger.error(f"Failed to get positions: {mt5.last_error()}")
         return []
+
+    if len(positions) == 0:
+        return []
+
+    results = []
+
+    for position in positions:
+
+        symbol = position.symbol
+        ticket = position.ticket
+        volume = position.volume
+
+        tick = mt5.symbol_info_tick(symbol)
+
+        if tick is None:
+            logger.error(f"Failed to get tick for {symbol}")
+            continue
+
+        if position.type == mt5.POSITION_TYPE_BUY:
+            order_type = mt5.ORDER_TYPE_SELL
+            price = tick.bid
+
+        elif position.type == mt5.POSITION_TYPE_SELL:
+            order_type = mt5.ORDER_TYPE_BUY
+            price = tick.ask
+
+        else:
+            continue
+
+        request = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": symbol,
+            "volume": volume,
+            "type": order_type,
+            "position": ticket,
+            "price": price,
+            "deviation": 20,
+            "magic": position.magic,
+            "comment": "Close All"
+        }
+
+        result = mt5.order_send(request)
+
+        if result is not None:
+            results.append(result)
+
+    return results
 
 def get_positions(magic=None):
     # First check if MT5 is initialized
