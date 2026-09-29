@@ -138,12 +138,8 @@ def close_all_positions_endpoint():
     ---
     description: Close all open trading positions based on optional filters like order type and magic number.
     """
-    try:
-        data = request.get_json() or {}
-        order_type = data.get('order_type', 'all')
-        magic = data.get('magic')
-        
-        results = close_all_positions(order_type, magic)
+    try:        
+        results = close_all_positions()
         if not results:
             return jsonify({"message": "No positions were closed"}), 200
         
