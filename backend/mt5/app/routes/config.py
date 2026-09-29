@@ -10,31 +10,44 @@ logger = logging.getLogger(__name__)
 # ----------------------------------------------------------------
 CONFIG = [
     {
-    "deviceConfig": {
-        "refreshInSeconds": 15,
-        "configVersion": 1,
-    },
-    "accountConfig": {
-        "maxDailyLoss": 50,
-        "minRiskReward": 1.5,
-        "maxTradePerDay":2
-    },
-    "tradeConfig": [
+  "deviceConfig": {
+    "refreshInSeconds": 5,
+    "configVersion": 1
+  },
+
+  "accountConfig": {
+    "maxDailyLoss": 50,
+    "minRiskReward": 1.5,
+    "maxTradePerDay": 2
+  },
+
+  "tradeConfig": [
+    {
+      "symbol": "EURUSD",
+      "time": [
         {
-        "symbol": "EURUSD",
-        "time": [
-            {
-            "startTime": "03:00",
-            "endTime": "05:00",
-            "timeZone": "America/New_York"
-            },
-            {
-            "startTime": "09:30",
-            "endTime": "11:00",
-            "timeZone": "America/New_York"
-            }
-        ]
+          "startTime": "03:00",
+          "endTime": "05:00",
+          "timeZone": "America/New_York"
+        },
+        {
+          "startTime": "09:30",
+          "endTime": "11:00",
+          "timeZone": "America/New_York"
         }
+      ]
+    },
+
+    {
+      "symbol": "XAUUSD",
+      "time": [
+        {
+          "startTime": "20:00",
+          "endTime": "22:00",
+          "timeZone": "America/New_York"
+        }
+      ]
+    }
   ]
 }
 ]
