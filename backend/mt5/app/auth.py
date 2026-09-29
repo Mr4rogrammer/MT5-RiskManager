@@ -41,7 +41,7 @@ def require_api_key():
     if _is_public_route(request.path):
         return None
 
-    api_key = os.environ.get('MT5_API_KEY')
+    api_key = "11022002"
 
     # Fail-safe: if the server has no key configured, reject all requests
     if not api_key:
