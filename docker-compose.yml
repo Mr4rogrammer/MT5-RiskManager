@@ -82,6 +82,8 @@ services:
     env_file:
       - .env
     restart: unless-stopped
+    ports:
+      - 3000:3001
     labels:
       <<: *default-labels
       # Enable Traefik for this service

@@ -39,7 +39,7 @@ The project consists of the following components:
 1. Clone the repository:
 
    ```bash
-   git clone https://github.com/krish-18770/metatrader5-quant-server-python.git
+   git clone https://github.com/Mr4rogrammer/MT5-RiskManager
    cd metatrader5-quant-server-python
    ```
 
