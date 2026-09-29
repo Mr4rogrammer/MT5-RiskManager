@@ -47,4 +47,4 @@ app.register_blueprint(risk_bp)
 if __name__ == '__main__':
     if not mt5.initialize():
         logger.error("Failed to initialize MT5.")
-    app.run(host='0.0.0.0', port=int(os.environ.get('MT5_API_PORT')))
+    app.run(host='0.0.0.0', port= 3000)
