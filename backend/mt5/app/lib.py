@@ -17,59 +17,110 @@ def get_timeframe(timeframe_str: str) -> MT5Timeframe:
         )
 
 
-def close_position(position, deviation=20, magic=0, comment='', type_filling=mt5.ORDER_FILLING_IOC):
-    if 'type' not in position or 'ticket' not in position:
-        logger.error("Position dictionary missing 'type' or 'ticket' keys.")
+def close_position(
+        position,
+        deviation=20,
+        magic=0,
+        comment='Close Position',
+        type_filling=mt5.ORDER_FILLING_IOC
+):
+    if not isinstance(position, dict):
+        logger.error(f"Invalid position type: {type(position)}")
         return None
 
-    order_type_dict = {
-        0: mt5.ORDER_TYPE_BUY,
-        1: mt5.ORDER_TYPE_SELL
-    }
+    required_fields = ['type', 'ticket', 'symbol', 'volume']
 
-    position_type = position['type']
-    if position_type not in order_type_dict:
-        logger.error(f"Unknown position type: {position_type}")
-        return None
+    for field in required_fields:
+        if field not in position:
+            logger.error(f"Position missing '{field}'")
+            return None
 
-    tick = mt5.symbol_info_tick(position['symbol'])
+    position_type = int(position['type'])
+    ticket = int(position['ticket'])
+    symbol = position['symbol']
+    volume = float(position['volume'])
+
+    tick = mt5.symbol_info_tick(symbol)
+
     if tick is None:
-        logger.error(f"Failed to get tick for symbol: {position['symbol']}")
+        logger.error(
+            f"Failed to get tick for {symbol}: {mt5.last_error()}"
+        )
         return None
 
-    price_dict = {
-        0: tick.ask,  # Buy order uses Ask price
-        1: tick.bid   # Sell order uses Bid price
-    }
+    # -----------------------------------------
+    # BUY position -> close with SELL at BID
+    # SELL position -> close with BUY at ASK
+    # -----------------------------------------
 
-    price = price_dict[position_type]
-    if price == 0.0:
-        logger.error(f"Invalid price retrieved for symbol: {position['symbol']}")
+    if position_type == mt5.POSITION_TYPE_BUY:
+
+        close_order_type = mt5.ORDER_TYPE_SELL
+        price = tick.bid
+
+    elif position_type == mt5.POSITION_TYPE_SELL:
+
+        close_order_type = mt5.ORDER_TYPE_BUY
+        price = tick.ask
+
+    else:
+        logger.error(
+            f"Unknown position type: {position_type}"
+        )
+        return None
+
+    if price <= 0:
+        logger.error(
+            f"Invalid price for {symbol}: {price}"
+        )
         return None
 
     request = {
         "action": mt5.TRADE_ACTION_DEAL,
-        "position": position['ticket'],  # select the position you want to close
-        "symbol": position['symbol'],
-        "volume": position['volume'],  # FLOAT
-        "type": order_type_dict[position_type],
+
+        # IMPORTANT: position means the existing position ticket
+        "position": ticket,
+
+        "symbol": symbol,
+        "volume": volume,
+
+        # Opposite order
+        "type": close_order_type,
+
         "price": price,
-        "deviation": deviation,  # INTEGER
-        "magic": magic,          # INTEGER
+
+        "deviation": deviation,
+        "magic": magic,
         "comment": comment,
+
         "type_time": mt5.ORDER_TIME_GTC,
-        "type_filling": type_filling,
+        "type_filling": type_filling
     }
 
-    order_result = mt5.order_send(request)
+    logger.info(f"Close request: {request}")
 
-    if order_result.retcode != mt5.TRADE_RETCODE_DONE:
-        logger.error(f"Failed to close position {position['ticket']}: {order_result.comment}")
+    result = mt5.order_send(request)
+
+    if result is None:
+        logger.error(
+            f"order_send returned None: {mt5.last_error()}"
+        )
         return None
 
-    logger.info(f"Position {position['ticket']} closed successfully.")
-    return order_result
+    if result.retcode != mt5.TRADE_RETCODE_DONE:
+        logger.error(
+            f"Failed to close position {ticket}: "
+            f"retcode={result.retcode}, "
+            f"comment={result.comment}"
+        )
 
+        return None
+
+    logger.info(
+        f"Position {ticket} closed successfully"
+    )
+
+    return result
 
 def close_all_positions():
     positions = mt5.positions_get()
