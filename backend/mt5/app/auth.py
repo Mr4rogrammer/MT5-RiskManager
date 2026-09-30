@@ -10,6 +10,7 @@ PUBLIC_ROUTES = [
     '/apidocs/',
     '/apispec_1.json',
     '/flasgger_static/',
+    '/ws',          # WebSocket upgrade — auth is handled inside ws.py
 ]
 
 

@@ -6,6 +6,7 @@ import MetaTrader5 as mt5
 from flasgger import Swagger
 from swagger import swagger_config
 from auth import require_api_key
+from ws import register_ws
 
 # Import routes
 from routes.health import health_bp
@@ -25,6 +26,12 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
 swagger = Swagger(app, config=swagger_config)
+
+# ----------------------------------------------------------------
+# Register WebSocket endpoint (/ws) — uses the same Flask port.
+# Starts ONE tick loop and ONE account loop as daemon threads.
+# ----------------------------------------------------------------
+register_ws(app)
 
 # ----------------------------------------------------------------
 # Register global authentication — runs before every request.
