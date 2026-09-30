@@ -31,7 +31,7 @@ swagger = Swagger(app, config=swagger_config)
 # Register WebSocket endpoint (/ws) — uses the same Flask port.
 # Starts ONE tick loop and ONE account loop as daemon threads.
 # ----------------------------------------------------------------
-register_ws(app)
+#register_ws(app)
 
 # ----------------------------------------------------------------
 # Register global authentication — runs before every request.
