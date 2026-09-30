@@ -81,7 +81,7 @@ def close_position_endpoint():
     
     except Exception as e:
         logger.error(f"Error in close_position: {str(e)}")
-        return jsonify({"error": "Internal server error"}), 500
+        return jsonify({"error": "Internal server error " + str(e)}), 500
 
 @position_bp.route('/close_all_positions', methods=['POST'])
 @swag_from({
