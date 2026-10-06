@@ -19,8 +19,14 @@ from routes.error import error_bp
 from routes.account import account_bp
 from routes.config import config_bp
 from routes.riskValue import risk_bp
+from routes.bot import bot_bp
+from crt_bot import start_crt_bot
 
 load_dotenv()
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s %(levelname)s %(name)s: %(message)s',
+)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
@@ -50,8 +56,10 @@ app.register_blueprint(error_bp)
 app.register_blueprint(account_bp)
 app.register_blueprint(config_bp)
 app.register_blueprint(risk_bp)
+app.register_blueprint(bot_bp)
 
 if __name__ == '__main__':
     if not mt5.initialize():
         logger.error("Failed to initialize MT5.")
-    app.run(host='0.0.0.0', port= 3000)
+    start_crt_bot()
+    app.run(host='0.0.0.0', port=int(os.environ.get('MT5_API_PORT', 5001)))

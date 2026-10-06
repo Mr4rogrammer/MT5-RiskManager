@@ -212,6 +212,30 @@ When the container starts, it runs these steps in order:
 
 All MT5 data (Wine prefix, MT5 installation, broker login) is persisted in the `./config` volume.
 
+## CRT Auto-Trading Bot
+
+A background thread (`app/crt_bot.py`) trades Candle Range Theory setups on
+M15, M30, H1 and H4, checked every few seconds so each 15-minute close is caught.
+
+- **C1** = range candle, **C2** = the candle that just closed
+- **SELL** when C2 sweeps above C1 high and closes back inside C1. SL = C2 high
+- **BUY** when C2 sweeps below C1 low and closes back inside C1. SL = C2 low
+- **TP** = 50% of C1 range. Trades close on SL/TP
+- Setups where price is already beyond SL/TP are skipped
+- Each timeframe uses its own magic number (`CRT_MAGIC_BASE` + minutes: 770015, 770030, 770060, 770240)
+
+The bot is **off by default**. Set `CRT_ENABLED=true` in `.env` or call:
+
+| Method | Endpoint      | Description                                   |
+| ------ | ------------- | --------------------------------------------- |
+| GET    | `/bot/status` | Enabled flag, settings, last 100 signals/orders |
+| POST   | `/bot/start`  | Start trading                                 |
+| POST   | `/bot/stop`   | Stop trading (open trades keep SL/TP)         |
+
+Settings (`.env`): `CRT_SYMBOLS`, `CRT_LOT`, `CRT_DEVIATION`, `CRT_MAGIC_BASE`,
+`CRT_POLL_INTERVAL`, `CRT_MAX_SIGNAL_AGE`. If your broker uses suffixed symbol
+names (e.g. `XAUUSDm`), list them exactly in `CRT_SYMBOLS`.
+
 ## License
 
 This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.

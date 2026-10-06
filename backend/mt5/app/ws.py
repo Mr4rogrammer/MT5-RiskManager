@@ -145,6 +145,7 @@ def _tick_loop() -> None:
     update the shared cache, and broadcast to subscribed clients.
     Runs in a single background daemon thread.
     """
+    global _clients
     logger.info("Tick polling loop started (interval=%.2fs)", TICK_INTERVAL)
     while True:
         try:
@@ -183,7 +184,6 @@ def _tick_loop() -> None:
             # 5. Remove dead clients
             if dead:
                 with _clients_lock:
-                    global _clients
                     _clients = [c for c in _clients if c["ws"] not in dead]
                 logger.warning(
                     "Removed %d dead client(s) during tick broadcast.", len(dead)
@@ -205,6 +205,7 @@ def _account_loop() -> None:
     that have subscribed to the 'account' event.
     Runs in a single background daemon thread.
     """
+    global _clients
     logger.info("Account polling loop started (interval=%.2fs)", ACCOUNT_INTERVAL)
     while True:
         try:
@@ -224,7 +225,6 @@ def _account_loop() -> None:
 
                 if dead:
                     with _clients_lock:
-                        global _clients
                         _clients = [c for c in _clients if c["ws"] not in dead]
                     logger.warning(
                         "Removed %d dead client(s) during account broadcast.", len(dead)
@@ -246,6 +246,7 @@ def _positions_loop() -> None:
     of open positions to all clients subscribed to the 'positions' event.
     Runs in a single background daemon thread.
     """
+    global _clients
     logger.info("Positions polling loop started (interval=%.2fs)", POSITIONS_INTERVAL)
     while True:
         try:
@@ -264,7 +265,6 @@ def _positions_loop() -> None:
 
             if dead:
                 with _clients_lock:
-                    global _clients
                     _clients = [c for c in _clients if c["ws"] not in dead]
                 logger.warning(
                     "Removed %d dead client(s) during positions broadcast.", len(dead)
