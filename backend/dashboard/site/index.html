@@ -321,14 +321,17 @@
       lastChecked = new Date();
       var version = res.headers.get("ETag") || res.headers.get("Last-Modified");
       if (data && version && version === lastVersion) { setSnapshot(); return null; }   // unchanged — keep the render
-      lastVersion = version;
-      return res.arrayBuffer();
-    }).then(function (buf) {
-      if (buf === null) return;
-      var db = new SQL.Database(new Uint8Array(buf));
+      return res.arrayBuffer().then(function (buf) { return { buf: buf, version: version }; });
+    }).then(function (got) {
+      if (got === null) return;
+      var db = new SQL.Database(new Uint8Array(got.buf));
       try {
+        var tables = {};
+        rows(db, "SELECT name FROM sqlite_master WHERE type = 'table'").forEach(function (r) { tables[r.name] = 1; });
+        if (!tables.trades) throw { notice: "format" };
+
         var meta = {};
-        rows(db, "SELECT key, value FROM meta").forEach(function (r) { meta[r.key] = r.value; });
+        if (tables.meta) rows(db, "SELECT key, value FROM meta").forEach(function (r) { meta[r.key] = r.value; });
         var offset = parseInt(meta.broker_offset_seconds || "0", 10) || 0;
         // Trade times are broker time; shift to real UTC so they match events and the viewer's clock
         var trades = rows(db, "SELECT * FROM trades").map(function (t) {
@@ -336,17 +339,23 @@
           if (t.closed_at) t.closed_utc = t.closed_at - offset;
           return t;
         });
-        var events = rows(db,
-          "SELECT day, bot, symbol, timeframe, status, reason, n FROM event_counts " +
-          "WHERE status IN ('signal','opened','skipped','rejected','error')");
+        // event_counts is the current format; older snapshots only have raw events
+        var wanted = "WHERE status IN ('signal','opened','skipped','rejected','error')";
+        var events = [], legacy = !tables.event_counts;
+        if (tables.event_counts) {
+          events = rows(db, "SELECT day, bot, symbol, timeframe, status, reason, n FROM event_counts " + wanted);
+        } else if (tables.events) {
+          events = rows(db,
+            "SELECT time - time % 86400 AS day, bot, symbol, timeframe, status, reason, COUNT(*) AS n " +
+            "FROM events " + wanted + " GROUP BY 1, 2, 3, 4, 5, 6");
+        }
         var bots = {};
-        try {
-          rows(db, "SELECT * FROM bots").forEach(function (b) {
-            try { b.settings = b.settings ? JSON.parse(b.settings) : {}; } catch (e) { b.settings = {}; }
-            bots[b.name] = b;
-          });
-        } catch (e) { /* snapshot from before the bots table existed */ }
-        data = { trades: trades, events: events, meta: meta, offset: offset, bots: bots };
+        if (tables.bots) rows(db, "SELECT * FROM bots").forEach(function (b) {
+          try { b.settings = b.settings ? JSON.parse(b.settings) : {}; } catch (e) { b.settings = {}; }
+          bots[b.name] = b;
+        });
+        data = { trades: trades, events: events, meta: meta, offset: offset, bots: bots, legacy: legacy };
+        lastVersion = got.version;   // only once it parsed, so a failed load is retried
       } finally {
         db.close();
       }
@@ -358,7 +367,13 @@
         return;
       }
       content.textContent = "";
-      if (err && err.notice) {
+      if (err && err.notice === "format") {
+        content.appendChild(el("div", { class: "card notice" }, [
+          el("strong", { text: "The snapshot isn't in a format this page can read" }),
+          el("span", { text: "Rebuild and restart the MT5 container so the bots write a new one: " +
+            "docker compose up -d --build mt5" })
+        ]));
+      } else if (err && err.notice) {
         content.appendChild(el("div", { class: "card notice" }, [
           el("strong", { text: "No data yet" }),
           el("span", { text: "The bots write the first snapshot about 30 seconds after they start." })
@@ -481,7 +496,7 @@
   // ------------------------------------------------------------------
   function render() {
     if (!data) return;
-    setSnapshot();
+    setSnapshot(data.legacy ? "old snapshot format — restart the MT5 container with the new code" : "", data.legacy);
     var since = sinceUtc();
     var closed = data.trades.filter(function (t) {
       return t.status === "closed" && inSlice(t) && (t.closed_utc || 0) >= since;
