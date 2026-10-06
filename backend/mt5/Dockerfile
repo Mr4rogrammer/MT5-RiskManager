@@ -11,6 +11,12 @@ RUN mkdir -p /config/.wine && \
     chown -R abc:abc /config/.wine && \
     chmod -R 755 /config/.wine
 
+# Drop apt sources from the base image that no longer exist
+# (bullseye-backports moved to archive.debian.org, NodeSource removed node_18.x)
+RUN rm -f /etc/apt/sources.list.d/nodesource* && \
+    grep -rlE 'nodesource|bullseye-backports' /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null \
+        | xargs -r sed -i -E '/nodesource|bullseye-backports/d'
+
 # Update package lists and upgrade packages
 RUN apt-get update && apt-get upgrade -y
 
