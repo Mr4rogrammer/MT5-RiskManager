@@ -11,11 +11,15 @@ RUN mkdir -p /config/.wine && \
     chown -R abc:abc /config/.wine && \
     chmod -R 755 /config/.wine
 
-# Drop apt sources from the base image that no longer exist
-# (bullseye-backports moved to archive.debian.org, NodeSource removed node_18.x)
+# Debian 11 (bullseye) has moved to archive.debian.org:
+#  - drop sources that no longer exist (bullseye-backports, NodeSource node_18.x)
+#  - point the remaining Debian sources at the archive
 RUN rm -f /etc/apt/sources.list.d/nodesource* && \
     grep -rlE 'nodesource|bullseye-backports' /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null \
-        | xargs -r sed -i -E '/nodesource|bullseye-backports/d'
+        | xargs -r sed -i -E '/nodesource|bullseye-backports/d' && \
+    grep -rlE '(deb|security)\.debian\.org' /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null \
+        | xargs -r sed -i -E 's#https?://(deb|security)\.debian\.org#http://archive.debian.org#g' && \
+    echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99archive
 
 # Update package lists and upgrade packages
 RUN apt-get update && apt-get upgrade -y
