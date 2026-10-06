@@ -430,13 +430,14 @@ settings. No dashboard changes are needed.
 
 ## Trade Journal (SQLite)
 
-`trade_db.py` records everything the bots do in `config/data/bots.db` on the VPS. The
-file stays small: a year of trades is a few MB.
+`trade_db.py` records everything the bots do in `config/data/bots.db` on the VPS, in full
+detail. It grows by roughly 60 MB a year, almost all of it raw events.
 
 | Table | Contents |
 | ----- | -------- |
 | `trades` | One row per position: bot, symbol, timeframe, side, volume, entry, initial SL, TP, money at risk, spread at entry, break-even trigger/SL/time, exit price/time/reason, profit, commission, swap, net, R (net ÷ money at risk) |
-| `events` | Every signal, skip (with reason), open, rejection, override close and break-even |
+| `events` | Every signal, skip (with reason), open, rejection, override close and break-even, with full details |
+| `event_counts` | The same events counted per day × bot × symbol × timeframe × status × reason (numbers in reasons masked). Days older than 30 are merged into weeks |
 | `bots` | Each registered bot: name, description, color slot, current settings, running/stopped |
 | `meta` | Snapshot time, broker time offset |
 
@@ -447,7 +448,12 @@ file stays small: a year of trades is a few MB.
   90) of MT5 history are imported, using the magic numbers. Open bot positions the journal
   doesn't know about are adopted.
 - **Sync.** Every `BOT_DB_SYNC_SECONDS` (default 30), closed positions are completed from deal
-  history and a consistent copy is written to `config/data/dashboard.db`.
+  history.
+- **Dashboard snapshot.** `config/data/dashboard.db` holds only what the dashboard shows:
+  trades (dashboard columns), `event_counts`, `bots` and `meta`. Raw events are left out. It
+  is rewritten only when something changed: trade or bot changes within 30 s, new events at
+  most every `BOT_DB_EVENT_SNAPSHOT_SECONDS` (default 300). A simulated year (4,000 trades,
+  250,000 events) gives a 1.9 MB snapshot, **0.3 MB gzipped**.
 - Query it directly on the VPS with `sqlite3 config/data/bots.db`, e.g.
   `SELECT bot, exit_reason, COUNT(*), ROUND(SUM(net), 2) FROM trades GROUP BY 1, 2;`
 
@@ -464,8 +470,20 @@ file stays small: a year of trades is a few MB.
 
 **There is no API behind it.** The `dashboard` container (nginx) serves a static page and
 the read-only `dashboard.db` snapshot. The page loads the database into the browser with
-sql.js and runs the queries there, refreshing every minute. Only that one file is reachable;
-the rest of `./config` is mounted read-only and not served.
+sql.js and runs the queries there. Only that one file is reachable; the rest of `./config`
+is mounted read-only and not served.
+
+**Data transferred:**
+
+| What | Size | When |
+| ---- | ---- | ---- |
+| Page | ~12 KB gzipped | Each visit (revalidated) |
+| sql.js from cdnjs | ~370 KB | First visit only, then cached by the browser |
+| Snapshot | ~0.3 MB gzipped after a year | Only when it changed |
+| Check for changes | ~200 bytes (304) | Every minute while the tab is open |
+
+Skip and signal counts on the dashboard refresh every 5 minutes; trades within a minute.
+For ranges over 30 days, event counts are rounded to whole weeks.
 
 Set the login in `.env`. The container refuses to start without it:
 

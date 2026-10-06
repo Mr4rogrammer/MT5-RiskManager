@@ -1,15 +1,24 @@
 """
 SQLite trade journal for the bots.
 
-  bots.db       live database, written only by this process
-  dashboard.db  read-only snapshot, refreshed every BOT_DB_SYNC_SECONDS, served to
-                the dashboard as a plain file (no API) — see backend/dashboard
+  bots.db       live database with full detail, written only by this process
+  dashboard.db  small read-only snapshot for the dashboard, served as a plain file
+                (no API) — see backend/dashboard. It holds only what the page shows:
+                trades (dashboard columns), bots, meta and event_counts. Raw events
+                stay in bots.db. It is rewritten only when something changed:
+                trade / bot changes within BOT_DB_SYNC_SECONDS, event-count-only
+                changes at most every BOT_DB_EVENT_SNAPSHOT_SECONDS.
 
 What is stored:
   trades  one row per MT5 position: bot, symbol, timeframe, side, entry, initial
           SL, TP, risk, break-even, exit price/time/reason, profit, commission,
           swap, net and R (net ÷ money at risk)
   events  every signal / skip / open / close / break-even the bots record
+  event_counts  the same events counted per UTC day × bot × symbol × timeframe ×
+          status × reason (numbers in reasons masked), kept up to date on every
+          write — this is what the dashboard reads, so its size grows by days,
+          not by events. Days older than BOT_DB_DAILY_COUNT_DAYS are merged into
+          weekly rows (Monday start).
   bots    every registered bot: label, description, color slot, current settings,
           enabled flag — the dashboard builds its bot list from this table, so a
           new strategy shows up without changing the dashboard
@@ -31,11 +40,15 @@ Settings (env vars):
   BOT_DB_DIR             directory for both files (default /config/data)
   BOT_DB_SYNC_SECONDS    seconds between syncs + snapshots (default 30)
   BOT_DB_BACKFILL_DAYS   days of MT5 history to import on start (default 90)
+  BOT_DB_EVENT_SNAPSHOT_SECONDS  min seconds between snapshots caused only by new
+                         events (default 300)
+  BOT_DB_DAILY_COUNT_DAYS  days of daily event counts before merging into weeks (default 30)
 """
 
 import json
 import logging
 import os
+import re
 import sqlite3
 import threading
 import time
@@ -50,6 +63,8 @@ DB_PATH       = os.path.join(DB_DIR, "bots.db")
 SNAPSHOT_PATH = os.path.join(DB_DIR, "dashboard.db")
 SYNC_SECONDS  = float(os.environ.get("BOT_DB_SYNC_SECONDS", "30"))
 BACKFILL_DAYS = int(os.environ.get("BOT_DB_BACKFILL_DAYS", "90"))
+EVENT_SNAPSHOT_SECONDS = float(os.environ.get("BOT_DB_EVENT_SNAPSHOT_SECONDS", "300"))
+DAILY_COUNT_DAYS = int(os.environ.get("BOT_DB_DAILY_COUNT_DAYS", "30"))
 
 TF_MINUTES = {15: "M15", 30: "M30", 60: "H1", 240: "H4"}
 
@@ -103,6 +118,17 @@ CREATE TABLE IF NOT EXISTS events (
 );
 CREATE INDEX IF NOT EXISTS events_time ON events(time);
 
+CREATE TABLE IF NOT EXISTS event_counts (
+    day       INTEGER NOT NULL,           -- UTC day start, unix seconds
+    bot       TEXT NOT NULL DEFAULT '',
+    symbol    TEXT NOT NULL DEFAULT '',
+    timeframe TEXT NOT NULL DEFAULT '',
+    status    TEXT NOT NULL DEFAULT '',
+    reason    TEXT NOT NULL DEFAULT '',   -- numbers replaced by N
+    n         INTEGER NOT NULL,
+    PRIMARY KEY (day, bot, symbol, timeframe, status, reason)
+);
+
 CREATE TABLE IF NOT EXISTS bots (
     name        TEXT PRIMARY KEY,         -- key used in trades.bot / events.bot
     label       TEXT,                     -- display name
@@ -127,6 +153,17 @@ _bots    = {}       # magic -> (bot name, timeframe)
 _state_fns = {}     # bot name -> callable returning (settings dict, enabled bool)
 _backfilled = set() # bot names already back-filled this run
 _sync_started = False
+_dirty   = True     # trades / bots / meta changed since the last snapshot
+_dirty_events = False  # only event counts changed since the last snapshot
+_last_snapshot = 0.0
+_last_compact  = 0.0
+_bot_state_cache = {}  # bot name -> last written (settings JSON, enabled)
+
+# Columns the dashboard reads; everything else stays in bots.db only
+SNAPSHOT_TRADE_COLUMNS = (
+    "ticket, bot, symbol, timeframe, side, volume, opened_at, entry_price, sl_initial,"
+    " tp, risk_money, be_sl, status, closed_at, exit_price, exit_reason, net, r_multiple"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -147,6 +184,7 @@ def init():
             _conn.execute("PRAGMA synchronous=NORMAL")
             _conn.executescript(SCHEMA)
             _conn.commit()
+            _rebuild_event_counts_if_empty()
             logger.info("trade_db: using %s (snapshot %s)", DB_PATH, SNAPSHOT_PATH)
 
         if not _sync_started:
@@ -191,20 +229,60 @@ def _update_bot_states():
         except Exception:
             logger.exception("trade_db: state of %s unavailable", name)
             continue
+        state = (json.dumps(settings, default=_json_default, sort_keys=True), 1 if enabled else 0)
+        if _bot_state_cache.get(name) == state:
+            continue   # unchanged — don't mark the snapshot stale
         _write("UPDATE bots SET settings = ?, enabled = ?, updated_at = ? WHERE name = ?",
-               (json.dumps(settings, default=_json_default), 1 if enabled else 0,
-                int(time.time()), name))
+               (state[0], state[1], int(time.time()), name))
+        _bot_state_cache[name] = state
 
 
 def _write(sql, params=()):
+    _write_many([(sql, params)])
+
+
+def _write_many(statements, events_only=False):
+    """Run statements in one transaction and mark the snapshot as stale."""
+    global _dirty, _dirty_events
     if _conn is None:
         return
     with _lock:
         try:
-            _conn.execute(sql, params)
+            for sql, params in statements:
+                _conn.execute(sql, params)
             _conn.commit()
+            if events_only:
+                _dirty_events = True
+            else:
+                _dirty = True
         except Exception:
-            logger.exception("trade_db write failed: %s", sql.split()[0:3])
+            _conn.rollback()
+            logger.exception("trade_db write failed: %s", statements[0][0].split()[0:3])
+
+
+def normalize_reason(reason):
+    """Group skip reasons that differ only by numbers ("RR 0.42 below minimum 1.0")."""
+    if not reason:
+        return ""
+    if reason.startswith("RR "):
+        return "Reward:risk below minimum"
+    return re.sub(r"\d+(\.\d+)?", "N", reason)
+
+
+def _rebuild_event_counts_if_empty():
+    """One-time migration: build event_counts from events recorded before it existed."""
+    if _conn.execute("SELECT 1 FROM event_counts LIMIT 1").fetchone():
+        return
+    if not _conn.execute("SELECT 1 FROM events LIMIT 1").fetchone():
+        return
+    _conn.create_function("norm_reason", 1, normalize_reason)
+    _conn.execute(
+        "INSERT INTO event_counts (day, bot, symbol, timeframe, status, reason, n)"
+        " SELECT time - time % 86400, COALESCE(bot, ''), COALESCE(symbol, ''),"
+        "        COALESCE(timeframe, ''), COALESCE(status, ''), norm_reason(reason), COUNT(*)"
+        " FROM events GROUP BY 1, 2, 3, 4, 5, 6")
+    _conn.commit()
+    logger.info("trade_db: built event_counts from existing events")
 
 
 def _json_default(value):
@@ -219,13 +297,19 @@ def _json_default(value):
 # ---------------------------------------------------------------------------
 
 def log_event(bot, symbol, timeframe, status, details):
-    _write(
-        "INSERT INTO events (time, bot, symbol, timeframe, status, side, reason, ticket, details)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (int(time.time()), bot, symbol, timeframe, status,
-         details.get("side"), details.get("reason"), details.get("ticket"),
-         json.dumps(details, default=_json_default)),
-    )
+    now = int(time.time())
+    _write_many([
+        ("INSERT INTO events (time, bot, symbol, timeframe, status, side, reason, ticket, details)"
+         " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         (now, bot, symbol, timeframe, status,
+          details.get("side"), details.get("reason"), details.get("ticket"),
+          json.dumps(details, default=_json_default))),
+        ("INSERT INTO event_counts (day, bot, symbol, timeframe, status, reason, n)"
+         " VALUES (?, ?, ?, ?, ?, ?, 1)"
+         " ON CONFLICT (day, bot, symbol, timeframe, status, reason) DO UPDATE SET n = n + 1",
+         (now - now % 86400, bot or "", symbol or "", timeframe or "", status or "",
+          normalize_reason(details.get("reason")))),
+    ], events_only=True)
 
 
 def trade_opened(ticket, bot, symbol, timeframe, side, volume, magic, comment,
@@ -419,37 +503,91 @@ def _update_broker_offset():
     diff = tick.time - time.time()
     if abs(diff) > 14 * 3600:
         return
-    offset = round(diff / 1800) * 1800
-    _write("INSERT OR REPLACE INTO meta (key, value) VALUES ('broker_offset_seconds', ?)",
-           (str(offset),))
+    offset = str(round(diff / 1800) * 1800)
+    with _lock:
+        row = _conn.execute("SELECT value FROM meta WHERE key = 'broker_offset_seconds'").fetchone()
+    if row is None or row["value"] != offset:
+        _write("INSERT OR REPLACE INTO meta (key, value) VALUES ('broker_offset_seconds', ?)",
+               (offset,))
 
 
-def snapshot():
-    """Copy the live DB to SNAPSHOT_PATH atomically (readers never see a half-written file)."""
+def compact_event_counts():
+    """Merge daily event counts older than DAILY_COUNT_DAYS into weekly rows (Monday start)."""
+    cutoff = int(time.time()) // 86400 * 86400 - DAILY_COUNT_DAYS * 86400
+    # 1970-01-01 was a Thursday: +3 days shifts the week boundary to Monday
+    week = "(day - ((day / 86400 + 3) % 7) * 86400)"
+    with _lock:
+        stale = _conn.execute(
+            f"SELECT COUNT(*) FROM event_counts WHERE day < ? AND day != {week}", (cutoff,)).fetchone()[0]
+        if not stale:
+            return
+        try:
+            _conn.execute(f"""
+                CREATE TEMP TABLE merged AS
+                SELECT {week} AS day, bot, symbol, timeframe, status, reason, SUM(n) AS n
+                FROM event_counts WHERE day < ? GROUP BY 1, 2, 3, 4, 5, 6""", (cutoff,))
+            _conn.execute("DELETE FROM event_counts WHERE day < ?", (cutoff,))
+            _conn.execute("INSERT INTO event_counts SELECT * FROM merged")
+            _conn.execute("DROP TABLE merged")
+            _conn.commit()
+        except Exception:
+            _conn.rollback()
+            raise
+    logger.info("trade_db: merged %d daily event-count rows into weeks", stale)
+    _write_many([], events_only=True)
+
+
+def snapshot(force=False):
+    """
+    Write the dashboard snapshot — only the tables and columns the page reads —
+    to a temp file, then swap it in atomically (readers never see a half-written
+    file). Skipped when nothing changed; when only event counts changed, at most
+    every EVENT_SNAPSHOT_SECONDS.
+    """
+    global _dirty, _dirty_events, _last_snapshot
     if _conn is None:
         return
     _update_bot_states()
-    _write("INSERT OR REPLACE INTO meta (key, value) VALUES ('snapshot_at', ?)",
-           (str(int(time.time())),))
+    events_due = _dirty_events and time.time() - _last_snapshot >= EVENT_SNAPSHOT_SECONDS
+    if not (force or _dirty or events_due):
+        return
+
     tmp = SNAPSHOT_PATH + ".tmp"
     with _lock:
         if os.path.exists(tmp):
             os.remove(tmp)
-        dst = sqlite3.connect(tmp)
+        _conn.execute("ATTACH DATABASE ? AS snap", (tmp,))
         try:
-            _conn.backup(dst)
+            _conn.executescript(f"""
+                CREATE TABLE snap.trades AS SELECT {SNAPSHOT_TRADE_COLUMNS} FROM main.trades;
+                CREATE TABLE snap.event_counts AS SELECT * FROM main.event_counts;
+                CREATE TABLE snap.bots AS SELECT * FROM main.bots;
+                CREATE TABLE snap.meta AS SELECT * FROM main.meta;
+            """)
+            _conn.execute("INSERT INTO snap.meta (key, value) VALUES ('snapshot_at', ?)",
+                          (str(int(time.time())),))
+            _conn.commit()
         finally:
-            dst.close()
+            _conn.execute("DETACH DATABASE snap")
+        _dirty = _dirty_events = False
+        _last_snapshot = time.time()
     os.replace(tmp, SNAPSHOT_PATH)
 
 
 def _sync_loop():
+    global _last_compact
     time.sleep(5)   # let both bots register first
     while True:
         try:
             sync()
         except Exception:
             logger.exception("trade_db: sync failed")
+        if time.time() - _last_compact >= 3600:
+            _last_compact = time.time()
+            try:
+                compact_event_counts()
+            except Exception:
+                logger.exception("trade_db: event-count compaction failed")
         try:
             snapshot()
         except Exception:

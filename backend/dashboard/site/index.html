@@ -229,7 +229,9 @@
   // State
   // ------------------------------------------------------------------
   var SQL = null;
-  var data = null;             // { trades, events, meta }
+  var data = null;             // { trades, events (daily counts), meta, bots }
+  var lastVersion = null;      // ETag / Last-Modified of the snapshot last parsed
+  var lastChecked = null;      // when the page last reached the server
   var filters = { days: 30, bot: "", symbol: "", tf: "" };
   var content = document.getElementById("content");
   var tooltip = document.getElementById("tooltip");
@@ -310,12 +312,19 @@
     }).then(function (s) { SQL = s; return s; });
 
     return ready.then(function () {
-      return fetch(DB_URL, { cache: "no-store" });
+      // "no-cache": the browser revalidates; an unchanged file comes back as a
+      // tiny 304 and is served from its cache
+      return fetch(DB_URL, { cache: "no-cache" });
     }).then(function (res) {
       if (res.status === 404) throw { notice: true };
       if (!res.ok) throw new Error("HTTP " + res.status + " loading the database");
+      lastChecked = new Date();
+      var version = res.headers.get("ETag") || res.headers.get("Last-Modified");
+      if (data && version && version === lastVersion) { setSnapshot(); return null; }   // unchanged — keep the render
+      lastVersion = version;
       return res.arrayBuffer();
     }).then(function (buf) {
+      if (buf === null) return;
       var db = new SQL.Database(new Uint8Array(buf));
       try {
         var meta = {};
@@ -328,7 +337,7 @@
           return t;
         });
         var events = rows(db,
-          "SELECT bot, symbol, timeframe, status, reason, time FROM events " +
+          "SELECT day, bot, symbol, timeframe, status, reason, n FROM event_counts " +
           "WHERE status IN ('signal','opened','skipped','rejected','error')");
         var bots = {};
         try {
@@ -366,7 +375,9 @@
   function setSnapshot(extra, isError) {
     var node = document.getElementById("snapshot");
     var at = data && data.meta.snapshot_at ? new Date(parseInt(data.meta.snapshot_at, 10) * 1000) : null;
-    var text = at ? "Snapshot " + at.toLocaleTimeString() + " · updates every minute" : "";
+    var text = at ? "Data from " + at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
+    if (lastChecked) text += (text ? " · " : "") + "checked " +
+      lastChecked.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) + " (every minute)";
     if (extra) text = text ? text + " · " + extra : extra;
     node.textContent = text;
     node.className = isError ? "error" : "";
@@ -476,7 +487,7 @@
       return t.status === "closed" && inSlice(t) && (t.closed_utc || 0) >= since;
     }).sort(function (a, b) { return a.closed_utc - b.closed_utc; });
     var open = data.trades.filter(function (t) { return t.status === "open" && inSlice(t); });
-    var events = data.events.filter(function (e) { return inSlice({ bot: e.bot, symbol: e.symbol, timeframe: e.timeframe }) && e.time >= since; });
+    var events = data.events.filter(function (e) { return inSlice({ bot: e.bot, symbol: e.symbol, timeframe: e.timeframe }) && e.day + 86400 > since; });
 
     var bots = allBots().filter(function (b) { return !filters.bot || b === filters.bot; });
     var s = summarize(closed);
@@ -785,7 +796,7 @@
     ]);
     var body = bots.map(function (b) {
       var c = { signal: 0, opened: 0, skipped: 0, rejected: 0, error: 0 };
-      events.forEach(function (e) { if (e.bot === b && c[e.status] !== undefined) c[e.status]++; });
+      events.forEach(function (e) { if (e.bot === b && c[e.status] !== undefined) c[e.status] += e.n; });
       return [
         { node: el("span", {}, [el("i", { class: "dot", style: "background:" + botColor(b) }), document.createTextNode(botName(b))]) },
         { text: c.signal.toLocaleString(), cls: "num" },
@@ -875,7 +886,7 @@
     events.forEach(function (e) {
       if (e.status !== "skipped") return;
       var key = e.bot + "\u0000" + normalizeReason(e.reason);
-      counts[key] = (counts[key] || 0) + 1;
+      counts[key] = (counts[key] || 0) + e.n;
     });
     var body = Object.keys(counts).sort(function (a, b) { return counts[b] - counts[a]; }).slice(0, 12).map(function (k) {
       var parts = k.split("\u0000");
