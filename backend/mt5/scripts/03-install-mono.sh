@@ -23,5 +23,6 @@ else
     log_message "INFO" "Mono is already installed."
 fi
 
-# Initialize Wine configuration
-winecfg
+# Initialize/update the Wine prefix without a GUI
+# (winecfg opens a settings window and blocks until it is closed)
+wineboot -u

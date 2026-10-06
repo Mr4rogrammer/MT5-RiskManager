@@ -4,8 +4,6 @@ source /scripts/02-common.sh
 
 log_message "RUNNING" "07-start-wine-flask.sh"
 
-log_message "INFO" "Starting Flask server in Wine environment..."
-
 # The desktop autostart session may not inherit the container env (.env),
 # so load the API/bot settings from s6's saved container environment.
 for var_file in /run/s6/container_environment/MT5_* /run/s6/container_environment/CRT_*; do
@@ -14,18 +12,27 @@ for var_file in /run/s6/container_environment/MT5_* /run/s6/container_environmen
     [ -n "${!var_name}" ] || export "$var_name=$(cat "$var_file")"
 done
 
-# Run the Flask app using Wine's Python
-wine python /app/app.py &
+flask_log="/config/flask.log"
 
-FLASK_PID=$!
+# Keep the Flask API (and CRT bot) running: restart it whenever it exits.
+run_flask_forever() {
+    while true; do
+        # Don't start a second copy if one is already running (e.g. started by hand)
+        if pgrep -f "python.*app.py" > /dev/null; then
+            sleep 30
+            continue
+        fi
 
-# Give the server some time to start
-sleep 5
+        log_message "INFO" "Starting Flask server in Wine (output: $flask_log)..."
+        echo "===== $(date '+%Y-%m-%d %H:%M:%S') starting app.py =====" >> "$flask_log"
 
-# Check if the Flask server is running
-if ps -p $FLASK_PID > /dev/null; then
-    log_message "INFO" "Flask server in Wine started successfully with PID $FLASK_PID."
-else
-    log_message "ERROR" "Failed to start Flask server in Wine."
-    exit 1
-fi
+        (cd /app && $wine_executable python -u app.py >> "$flask_log" 2>&1)
+
+        log_message "ERROR" "Flask server exited with code $?. Restarting in 10 seconds..."
+        sleep 10
+    done
+}
+
+run_flask_forever &
+
+log_message "INFO" "Flask watchdog started (PID $!)."

@@ -136,6 +136,9 @@ docker compose logs -f mt5
 # View MT5 setup log inside container
 docker exec mt5 cat /var/log/mt5_setup.log
 
+# View Flask API / CRT bot log (Flask is auto-restarted if it crashes)
+docker exec mt5 tail -f /config/flask.log
+
 # Restart the container
 docker compose restart mt5
 
