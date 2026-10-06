@@ -25,7 +25,9 @@ def bot_status():
         # MT5 "Algo Trading" button — must be true for orders to go through
         "algo_trading": terminal.trade_allowed if terminal is not None else None,
         "timeframes": list(crt_bot.TIMEFRAMES),
-        "settings": crt_bot.settings,
+        # sets (e.g. commission_pct_symbols) are not JSON serializable
+        "settings": {k: sorted(v) if isinstance(v, set) else v
+                     for k, v in crt_bot.settings.items()},
         "events": list(crt_bot.events),
     })
 

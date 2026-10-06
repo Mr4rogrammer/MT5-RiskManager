@@ -313,8 +313,8 @@ def _move_sl_to_breakeven(pos, entry):
     result = mt5.order_send(request)
     if result and result.retcode == mt5.TRADE_RETCODE_DONE:
         logger.info(
-            "CRT BE: %s ticket=%s SL moved to %.%df (break-even)",
-            pos.symbol, pos.ticket, info.digits, new_sl
+            "CRT BE: %s ticket=%s SL moved to %s (break-even)",
+            pos.symbol, pos.ticket, new_sl
         )
         events.append({
             "time":    datetime.now(timezone.utc).isoformat(timespec="seconds"),
