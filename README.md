@@ -218,27 +218,115 @@ All MT5 data (Wine prefix, MT5 installation, broker login) is persisted in the `
 ## CRT Auto-Trading Bot
 
 A background thread (`app/crt_bot.py`) trades Candle Range Theory setups on
-M15, M30, H1 and H4, checked every few seconds so each 15-minute close is caught.
+H4, H1, M30 and M15. It polls every `CRT_POLL_INTERVAL` seconds (default 5) so each
+candle close is caught quickly.
 
-- **C1** = range candle, **C2** = the candle that just closed
-- **SELL** when C2 sweeps above C1 high and closes back inside C1. SL = C2 high
-- **BUY** when C2 sweeps below C1 low and closes back inside C1. SL = C2 low
-- **TP** = 50% of C1 range. Trades close on SL/TP
-- Setups where price is already beyond SL/TP are skipped
-- Setups with reward:risk below `CRT_MIN_RR` (default 1.0), or a TP distance not above the spread, are skipped
-- Each timeframe uses its own magic number (`CRT_MAGIC_BASE` + minutes: 770015, 770030, 770060, 770240)
+### The pattern
+
+| Candle | Role |
+| ------ | ---- |
+| **C1** | Range candle (closed) |
+| **C2** | Sweep candle (just closed): takes out one side of C1, then closes back inside C1 |
+| **C3** | Candle now opening. **Entry happens here** at market |
+
+| Setup | Condition | Entry | SL | TP |
+| ----- | --------- | ----- | -- | -- |
+| **Bearish → SELL** | `C2.high > C1.high` and C2 closes inside C1 | Bid at C3 open | C2 high | C1 low |
+| **Bullish → BUY**  | `C2.low < C1.low` and C2 closes inside C1   | Ask at C3 open | C2 low  | C1 high |
+
+If C2 sweeps **both** sides, or neither, there is no signal. TP is the **opposite side
+of C1** (the full range), not 50% of it.
+
+### Trade rules
+
+1. **Break-even.** On every poll, each open CRT position has its SL moved to the entry
+   price once price has covered about half of the entry→TP distance (the code uses 47%).
+   This always runs, even when the symbol is blocked for new entries.
+2. **One trade per pair, higher timeframe wins.** While a CRT trade is open on a symbol,
+   the bot only scans timeframes **higher** than that trade's:
+
+   | Running trade | New signal on | Result |
+   | ------------- | ------------- | ------ |
+   | H1 BUY | H4 **SELL** (opposite) | H1 trade is closed at market, H4 SELL is entered |
+   | H1 BUY | H4 BUY (same direction) | Skipped, H1 trade is kept |
+   | H1 BUY | M30 / M15 / H1 (any) | Not scanned. H1 keeps running |
+   | H4 (any) | anything | Not scanned |
+
+   The running trade is only closed once the higher-timeframe setup has passed every
+   filter below, so it is never closed for a trade that would then be skipped. If the
+   close fails, the new trade is not entered. The running trade's timeframe is taken
+   from its magic number. A trade is logged as `closed` with reason
+   `overridden by <TF> signal`.
+3. **Higher timeframe first.** Timeframes are scanned H4 → H1 → M30 → M15. When a trade is
+   placed on one, the lower timeframes are skipped for that symbol in that cycle.
+4. **C3 entry only.** A setup is ignored if more than `CRT_MAX_SIGNAL_AGE` seconds
+   (default 300) have passed since C3 opened. Each C2 is evaluated only once.
+
+### Filters a signal must pass (in order)
+
+1. **Price still between SL and TP.** It is skipped if price has already moved past either.
+2. **Fees.** The expected profit at TP (in account currency, from `order_calc_profit`)
+   must be greater than the round-trip commission plus the spread cost. If MT5 cannot
+   calculate profit, the bot falls back to a simpler check: the TP distance must be
+   larger than the spread.
+3. **Reward:risk.** It must be at least `CRT_MIN_RR` (default 1.0; `0` turns this off).
+4. **Broker stops level.** SL and TP must both be at least `trade_stops_level` points
+   from price.
+5. **No duplicates.** A position with the same magic number and comment must not
+   already be open.
+
+### Commission model
+
+Two modes, chosen per symbol:
+
+| Mode | Applies to | Formula | Example |
+| ---- | ---------- | ------- | ------- |
+| **Flat** | All symbols **not** in `CRT_COMMISSION_PCT_SYMBOLS` (forex, XAUUSD, XAGUSD…) | `lot × CRT_COMMISSION_PER_LOT` | 0.01 lot × $5 = **$0.05** |
+| **Percentage** | Symbols in `CRT_COMMISSION_PCT_SYMBOLS` (e.g. BTCUSD) | `lot × contract_size × price × CRT_COMMISSION_PCT_RATE / 100` | 0.01 × 1 × 60 000 × 0.04% = **$0.24** |
+
+Both rates are **round-trip** (opening and closing combined).
+
+### Order tagging
+
+- Magic number = `CRT_MAGIC_BASE` + timeframe minutes: 770015 (M15), 770030 (M30),
+  770060 (H1), 770240 (H4)
+- Comment = `CRT <TF> <C2 open time>` (e.g. `CRT H1 1759737600`)
+
+### Control
 
 The bot is **off by default**. Set `CRT_ENABLED=true` in `.env` or call:
 
-| Method | Endpoint      | Description                                   |
-| ------ | ------------- | --------------------------------------------- |
-| GET    | `/bot/status` | Enabled flag, settings, last 100 signals/orders |
-| POST   | `/bot/start`  | Start trading                                 |
-| POST   | `/bot/stop`   | Stop trading (open trades keep SL/TP)         |
+| Method | Endpoint      | Description                                     |
+| ------ | ------------- | ----------------------------------------------- |
+| GET    | `/bot/status` | Enabled flag, Algo Trading flag, settings, last 100 events |
+| POST   | `/bot/start`  | Start trading                                   |
+| POST   | `/bot/stop`   | Stop trading (open trades keep their SL/TP)     |
 
-Settings (`.env`): `CRT_SYMBOLS`, `CRT_LOT`, `CRT_DEVIATION`, `CRT_MAGIC_BASE`,
-`CRT_POLL_INTERVAL`, `CRT_MAX_SIGNAL_AGE`, `CRT_MIN_RR`. If your broker uses suffixed symbol
-names (e.g. `XAUUSDm`), list them exactly in `CRT_SYMBOLS`.
+Event statuses in `/bot/status`: `signal`, `opened`, `closed` (higher-TF override),
+`skipped` (with a `reason`), `rejected` (broker retcode), `error`, `breakeven`.
+
+> The MT5 terminal's **Algo Trading** button must be on (`algo_trading: true` in
+> `/bot/status`), or the broker will reject the orders.
+
+### Settings (`.env`)
+
+| Variable | Default | Description |
+| -------- | ------- | ----------- |
+| `CRT_ENABLED` | `false` | Start trading on boot |
+| `CRT_SYMBOLS` | `XAUUSD,EURUSD,GBPUSD,AUDUSD,USDCHF,NZDUSD,USDCAD` | Symbols to trade |
+| `CRT_LOT` | `0.01` | Fixed lot size (normalized to the broker's volume step/min/max) |
+| `CRT_DEVIATION` | `20` | Maximum slippage in points |
+| `CRT_MAGIC_BASE` | `770000` | Base for the magic number of each timeframe |
+| `CRT_POLL_INTERVAL` | `5` | Seconds between checks |
+| `CRT_MAX_SIGNAL_AGE` | `300` | Maximum seconds after C3 opens that an entry is still allowed |
+| `CRT_MIN_RR` | `1.0` | Minimum reward:risk (`0` disables) |
+| `CRT_COMMISSION_PER_LOT` | `5.0` | Flat round-trip commission per 1.0 lot, in account currency |
+| `CRT_COMMISSION_PCT_SYMBOLS` | `BTCUSD` | Comma-separated symbols that use percentage commission |
+| `CRT_COMMISSION_PCT_RATE` | `0.04` | Round-trip percentage rate for those symbols (`0.04` = 0.04%) |
+
+If your broker uses suffixed symbol names (e.g. `XAUUSDm`), list them exactly in
+`CRT_SYMBOLS`. Note that `CRT_COMMISSION_PCT_SYMBOLS` is uppercased when it is read, so a
+symbol with a lowercase suffix (e.g. `BTCUSDm`) will not match and falls back to flat commission.
 
 ## License
 
