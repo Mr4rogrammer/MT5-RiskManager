@@ -1,5 +1,6 @@
 from flask import Blueprint, jsonify
 from flasgger import swag_from
+import MetaTrader5 as mt5
 import crt_bot
 
 bot_bp = Blueprint('bot', __name__)
@@ -18,8 +19,11 @@ def bot_status():
     ---
     description: Whether the CRT bot is trading, its settings, and the last 100 signals/orders.
     """
+    terminal = mt5.terminal_info()
     return jsonify({
         "enabled": crt_bot.is_enabled(),
+        # MT5 "Algo Trading" button — must be true for orders to go through
+        "algo_trading": terminal.trade_allowed if terminal is not None else None,
         "timeframes": list(crt_bot.TIMEFRAMES),
         "settings": crt_bot.settings,
         "events": list(crt_bot.events),

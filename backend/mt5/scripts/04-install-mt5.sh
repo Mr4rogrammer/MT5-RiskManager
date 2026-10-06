@@ -22,7 +22,11 @@ fi
 # Recheck if MetaTrader 5 is installed
 if [ -e "$mt5file" ]; then
     log_message "INFO" "File $mt5file is installed. Running MT5..."
-    $wine_executable "$mt5file" &
+
+    # Startup config: turn on Algo Trading so the API/CRT bot can place orders
+    # (the toolbar button can't be enabled from Python).
+    printf '[Experts]\r\nAllowLiveTrading=1\r\nAllowDllImport=0\r\nEnabled=1\r\n' > /config/mt5-startup.ini
+    $wine_executable "$mt5file" "/config:Z:\\config\\mt5-startup.ini" &
 else
     log_message "ERROR" "File $mt5file is not installed. MT5 cannot be run."
 fi
