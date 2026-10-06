@@ -13,6 +13,7 @@ look at the last two CLOSED candles:
   Entry : market order right after C2 closes
   SL    : C2's sweep extreme (C2 high for SELL, C2 low for BUY)
   TP    : 50% of C1 range
+  Filter: skip if reward < CRT_MIN_RR x risk, or reward <= current spread
 
 Trades are closed by their SL/TP on the broker side.
 
@@ -27,6 +28,7 @@ Settings (env vars):
   CRT_MAGIC_BASE      (default 770000)
   CRT_POLL_INTERVAL   seconds between checks (default 5)
   CRT_MAX_SIGNAL_AGE  ignore setups whose C2 closed more than N seconds ago (default 300)
+  CRT_MIN_RR          minimum reward:risk to take a trade (default 1.0, 0 disables)
 """
 
 import logging
@@ -157,6 +159,22 @@ def _place(symbol, tf_name, c2_time, signal, tick):
                 price=price, sl=sl, tp=tp)
         return
 
+    # Reward must be worth the risk and bigger than the spread
+    risk = abs(price - sl)
+    reward = abs(tp - price)
+    spread = tick.ask - tick.bid
+    rr = reward / risk
+
+    if reward <= spread:
+        _record(symbol, tf_name, "skipped", side=side, reason="TP distance not above spread",
+                price=price, sl=sl, tp=tp, reward=round(reward, info.digits), spread=round(spread, info.digits))
+        return
+
+    if rr < settings["min_rr"]:
+        _record(symbol, tf_name, "skipped", side=side, reason=f"RR {rr:.2f} below minimum {settings['min_rr']}",
+                price=price, sl=sl, tp=tp)
+        return
+
     # Broker minimum distance for stops
     min_distance = info.trade_stops_level * info.point
     if abs(price - sl) < min_distance or abs(tp - price) < min_distance:
@@ -278,6 +296,7 @@ def start_crt_bot():
         "magic_base": int(os.environ.get("CRT_MAGIC_BASE", "770000")),
         "poll_interval": float(os.environ.get("CRT_POLL_INTERVAL", "5")),
         "max_signal_age": int(os.environ.get("CRT_MAX_SIGNAL_AGE", "300")),
+        "min_rr": float(os.environ.get("CRT_MIN_RR", "1.0")),
     })
 
     for symbol in settings["symbols"]:

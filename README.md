@@ -225,6 +225,7 @@ M15, M30, H1 and H4, checked every few seconds so each 15-minute close is caught
 - **BUY** when C2 sweeps below C1 low and closes back inside C1. SL = C2 low
 - **TP** = 50% of C1 range. Trades close on SL/TP
 - Setups where price is already beyond SL/TP are skipped
+- Setups with reward:risk below `CRT_MIN_RR` (default 1.0), or a TP distance not above the spread, are skipped
 - Each timeframe uses its own magic number (`CRT_MAGIC_BASE` + minutes: 770015, 770030, 770060, 770240)
 
 The bot is **off by default**. Set `CRT_ENABLED=true` in `.env` or call:
@@ -236,7 +237,7 @@ The bot is **off by default**. Set `CRT_ENABLED=true` in `.env` or call:
 | POST   | `/bot/stop`   | Stop trading (open trades keep SL/TP)         |
 
 Settings (`.env`): `CRT_SYMBOLS`, `CRT_LOT`, `CRT_DEVIATION`, `CRT_MAGIC_BASE`,
-`CRT_POLL_INTERVAL`, `CRT_MAX_SIGNAL_AGE`. If your broker uses suffixed symbol
+`CRT_POLL_INTERVAL`, `CRT_MAX_SIGNAL_AGE`, `CRT_MIN_RR`. If your broker uses suffixed symbol
 names (e.g. `XAUUSDm`), list them exactly in `CRT_SYMBOLS`.
 
 ## License
