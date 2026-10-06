@@ -65,13 +65,24 @@ from mt5_guard import MT5_LOCK
 
 logger = logging.getLogger(__name__)
 
-DB_DIR        = os.environ.get("BOT_DB_DIR", "/config/data")
-DB_PATH       = os.path.join(DB_DIR, "bots.db")
-SNAPSHOT_PATH = os.path.join(DB_DIR, "dashboard.db")
-SYNC_SECONDS  = float(os.environ.get("BOT_DB_SYNC_SECONDS", "30"))
-BACKFILL_DAYS = int(os.environ.get("BOT_DB_BACKFILL_DAYS", "90"))
-EVENT_SNAPSHOT_SECONDS = float(os.environ.get("BOT_DB_EVENT_SNAPSHOT_SECONDS", "300"))
-DAILY_COUNT_DAYS = int(os.environ.get("BOT_DB_DAILY_COUNT_DAYS", "30"))
+# Settings — read in init() (after app.py's load_dotenv), see _load_settings()
+DB_DIR = DB_PATH = SNAPSHOT_PATH = None
+SYNC_SECONDS = 30.0
+BACKFILL_DAYS = 90
+EVENT_SNAPSHOT_SECONDS = 300.0
+DAILY_COUNT_DAYS = 30
+
+
+def _load_settings():
+    global DB_DIR, DB_PATH, SNAPSHOT_PATH, SYNC_SECONDS, BACKFILL_DAYS
+    global EVENT_SNAPSHOT_SECONDS, DAILY_COUNT_DAYS
+    DB_DIR        = os.environ.get("BOT_DB_DIR", "/config/data")
+    DB_PATH       = os.path.join(DB_DIR, "bots.db")
+    SNAPSHOT_PATH = os.path.join(DB_DIR, "dashboard.db")
+    SYNC_SECONDS  = float(os.environ.get("BOT_DB_SYNC_SECONDS", "30"))
+    BACKFILL_DAYS = int(os.environ.get("BOT_DB_BACKFILL_DAYS", "90"))
+    EVENT_SNAPSHOT_SECONDS = float(os.environ.get("BOT_DB_EVENT_SNAPSHOT_SECONDS", "300"))
+    DAILY_COUNT_DAYS = int(os.environ.get("BOT_DB_DAILY_COUNT_DAYS", "30"))
 
 TF_MINUTES = {15: "M15", 30: "M30", 60: "H1", 240: "H4"}
 
@@ -182,6 +193,7 @@ def init():
     global _conn, _sync_started
     with _lock:
         if _conn is None:
+            _load_settings()
             os.makedirs(DB_DIR, exist_ok=True)
             _conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=30)
             _conn.row_factory = sqlite3.Row

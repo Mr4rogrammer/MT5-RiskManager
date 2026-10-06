@@ -56,6 +56,27 @@ fees = {}
 # Every Bot created, by name — used by the generic /bots routes
 BOTS = {}
 
+ACCOUNT_HEDGING = getattr(mt5, "ACCOUNT_MARGIN_MODE_RETAIL_HEDGING", 2)
+
+
+def account_problem():
+    """
+    None if the account can run several bots on the same symbol, else the reason.
+    Netting accounts keep ONE position per symbol, so bots would merge into each
+    other's trades (SL/TP overwritten, magic numbers lost). BOTS_ALLOW_NETTING=true
+    overrides the check (only sensible with a single bot per symbol).
+    """
+    if os.environ.get("BOTS_ALLOW_NETTING", "false").lower() == "true":
+        return None
+    with MT5_LOCK:
+        info = mt5.account_info()
+    if info is None:
+        return None                     # not logged in yet — checked again on start
+    if info.margin_mode != ACCOUNT_HEDGING:
+        return ("account is NETTING (one position per symbol): bots would merge into each "
+                "other's trades. Use a hedging account, or set BOTS_ALLOW_NETTING=true")
+    return None
+
 
 def load_fees():
     if fees:
@@ -179,6 +200,7 @@ class Bot:
         self._started = False
         self._start_lock = threading.Lock()
         self._be_retry_after = {}   # ticket -> unix time
+        self._account_checked = False
 
     # -- bookkeeping --------------------------------------------------------
 
@@ -458,6 +480,17 @@ class Bot:
             logger.warning("%s BE failed: %s ticket=%s err=%s (retry in %ss)",
                            self.label, pos.symbol, pos.ticket, err, BE_RETRY_SECONDS)
 
+    def try_enable(self):
+        """Start new entries unless the account can't run several bots. Returns (ok, reason)."""
+        problem = account_problem()
+        if problem:
+            self.enabled.clear()
+            logger.error("%s not started: %s", self.label, problem)
+            self.record("", None, "error", reason=f"not started: {problem}")
+            return False, problem
+        self.enabled.set()
+        return True, None
+
     # -- loop ---------------------------------------------------------------
 
     def start(self, check, be_trigger, enabled_by_default):
@@ -486,7 +519,7 @@ class Bot:
                                    self.label, symbol)
 
         if enabled_by_default:
-            self.enabled.set()
+            self.try_enable()
 
         threading.Thread(target=self._loop, args=(check, be_trigger),
                          daemon=True, name=f"{self.name}-bot").start()
@@ -502,6 +535,11 @@ class Bot:
                         mt5.initialize()
                         for symbol in self.settings["symbols"]:
                             mt5.symbol_select(symbol, True)
+                    # The account may not have been logged in at start: check it once it is
+                    if not self._account_checked and mt5.account_info() is not None:
+                        self._account_checked = True
+                        if self.enabled.is_set():
+                            self.try_enable()
 
                 for symbol in self.settings["symbols"]:
                     # One symbol at a time under MT5_LOCK; other bots run between symbols

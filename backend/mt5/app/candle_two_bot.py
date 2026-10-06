@@ -201,7 +201,7 @@ def start_candle_two_bot():
 
 
 def enable():
-    BOT.enabled.set()
+    return BOT.try_enable()
 
 
 def disable():

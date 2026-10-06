@@ -204,7 +204,7 @@ def start_daily_sweep_bot():
 
 
 def enable():
-    BOT.enabled.set()
+    return BOT.try_enable()
 
 
 def disable():

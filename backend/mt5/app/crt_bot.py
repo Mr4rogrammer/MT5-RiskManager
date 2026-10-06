@@ -166,7 +166,7 @@ def start_crt_bot():
 
 
 def enable():
-    BOT.enabled.set()
+    return BOT.try_enable()
 
 
 def disable():

@@ -515,6 +515,12 @@ Every bot runs in its own thread, plus one journal-sync thread. Two locks keep t
   journal lock, so the two can't deadlock. The dashboard reads only the snapshot file and never
   touches either lock.
 
+**Hedging account required.** Several bots trade the same symbols, so each needs its own
+position. On a **netting** account MT5 keeps one position per symbol and the bots would
+merge into each other's trades. At start (and again once MT5 is logged in), every bot checks
+the account type and refuses to trade on netting, recording the reason in its events. Set
+`BOTS_ALLOW_NETTING=true` only if you run a single bot per symbol.
+
 Tested with all 13 bots polling 25× faster than live, plus 8 extra journal writers, for 20 s:
 0 overlapping MT5 calls, 0 database errors, no deadlock. With the MT5 lock disabled, the same
 test showed ~17,000 overlapping calls.
