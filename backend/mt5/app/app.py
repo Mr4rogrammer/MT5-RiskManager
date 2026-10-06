@@ -21,6 +21,7 @@ from routes.config import config_bp
 from routes.riskValue import risk_bp
 from routes.bot import bot_bp
 from crt_bot import start_crt_bot
+from candle_two_bot import start_candle_two_bot
 
 load_dotenv()
 logging.basicConfig(
@@ -62,4 +63,5 @@ if __name__ == '__main__':
     if not mt5.initialize():
         logger.error("Failed to initialize MT5.")
     start_crt_bot()
+    start_candle_two_bot()
     app.run(host='0.0.0.0', port=int(os.environ.get('MT5_API_PORT', 5001)))

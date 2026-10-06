@@ -10,7 +10,8 @@ Pattern (per symbol, HTF-first: H4 → H1 → M30 → M15):
   Bearish CRT: C2.high > C1.high  AND  C2.close inside C1  →  SELL at C3 open
   Bullish CRT: C2.low  < C1.low   AND  C2.close inside C1  →  BUY  at C3 open
 
-  SL : C2's sweep extreme  (C2.high for SELL, C2.low for BUY)
+  SL : beyond C2's sweep extreme (C2.high + spread for SELL, C2.low for BUY),
+       plus CRT_SL_BUFFER_SPREADS × spread on both sides
   TP : opposite side of C1 (C1.low  for SELL, C1.high for BUY)
 
 Rules:
@@ -24,7 +25,10 @@ Rules:
                     market and the higher-TF trade is entered. A higher-TF signal
                     in the SAME direction is skipped (the running trade is kept).
   • C3 entry only — signal is ignored once C3 is older than CRT_MAX_SIGNAL_AGE s.
-  • Break-even    — SL is moved to entry price when price reaches 50 % of TP range.
+  • Break-even    — SL moves to entry ± round-trip commission once price reaches
+                    CRT_BE_TRIGGER (default 47 %) of the entry→TP distance.
+                    Runs even while the bot is stopped.
+  • Min SL        — skip setups whose SL is closer than CRT_MIN_SL_SPREADS × spread.
   • Fees filter   — expected TP profit (account currency) must exceed round-trip
                     commission + spread cost; otherwise the trade is skipped.
 
@@ -48,6 +52,9 @@ Settings (env vars):
   CRT_COMMISSION_PER_LOT      round-trip flat commission, account currency / 1.0 lot (default 5.0)
   CRT_COMMISSION_PCT_SYMBOLS  comma-separated symbols using % commission (default BTCUSD)
   CRT_COMMISSION_PCT_RATE     round-trip % rate for those symbols (default 0.04 → means 0.04 %)
+  CRT_SL_BUFFER_SPREADS       extra SL room beyond the wick, × spread (default 0)
+  CRT_MIN_SL_SPREADS          minimum SL distance, × spread (default 3, 0 disables)
+  CRT_BE_TRIGGER              fraction of entry→TP that triggers break-even (default 0.47)
 """
 
 import logging
@@ -90,6 +97,10 @@ _last_bar = {}
 
 # Recent signals / orders, newest last — exposed via /bot/status
 events = deque(maxlen=100)
+
+# ticket -> unix time before which a failed break-even modify is not retried
+_be_retry_after = {}
+BE_RETRY_SECONDS = 60
 
 
 # ---------------------------------------------------------------------------
@@ -163,7 +174,7 @@ def _normalize_volume(volume, info):
 def _open_crt_positions(symbol):
     """Return every CRT-managed position currently open for this symbol."""
     positions = mt5.positions_get(symbol=symbol) or []
-    return [p for p in positions if p.comment.startswith("CRT")]
+    return [p for p in positions if p.comment.startswith("CRT ")]
 
 
 def _position_tf(pos):
@@ -256,53 +267,60 @@ def _commission_usd(symbol, volume, price, info):
 
 def _manage_breakeven(symbol):
     """
-    For every open CRT position on `symbol`:
-    once price has moved ≥ 50 % of the entry→TP range, slide SL to entry price.
+    For every open CRT position on `symbol`: once price has covered
+    CRT_BE_TRIGGER (default 47 %) of the entry→TP distance, move SL to
+    entry ± round-trip commission, so a "break-even" stop-out really is ~$0.
     """
     positions = mt5.positions_get(symbol=symbol) or []
     for pos in positions:
-        if not pos.comment.startswith("CRT"):
+        if not pos.comment.startswith("CRT "):
             continue
 
-        entry = pos.price_open
-        sl    = pos.sl
-        tp    = pos.tp
-
-        if tp == 0 or sl == 0:
+        entry, sl, tp = pos.price_open, pos.sl, pos.tp
+        if tp == 0 or sl == 0 or tp == entry:
             continue
 
-        total_range = abs(tp - entry)
-        if total_range == 0:
+        # Back off after a rejected modify instead of retrying every poll
+        if time.time() < _be_retry_after.get(pos.ticket, 0):
             continue
 
         tick = mt5.symbol_info_tick(symbol)
-        if tick is None:
+        info = mt5.symbol_info(symbol)
+        if tick is None or info is None:
             continue
 
-        if pos.type == mt5.POSITION_TYPE_BUY:
-            current  = tick.bid
-            halfway  = entry + total_range * 0.47
-            # Skip if SL is already at or above entry (already at BE or better)
-            if sl >= entry:
-                continue
-            if current >= halfway:
-                _move_sl_to_breakeven(pos, entry)
+        is_buy  = pos.type == mt5.POSITION_TYPE_BUY
+        trigger = entry + (tp - entry) * settings["be_trigger"]
+        current = tick.bid if is_buy else tick.ask
+        if (is_buy and current < trigger) or (not is_buy and current > trigger):
+            continue
 
-        else:  # SELL
-            current  = tick.ask
-            halfway  = entry - total_range * 0.47
-            if sl <= entry:
-                continue
-            if current <= halfway:
-                _move_sl_to_breakeven(pos, entry)
+        new_sl = round(entry + _commission_offset(pos, info) * (1 if is_buy else -1),
+                       info.digits)
+
+        # Already at (or past) break-even
+        if (is_buy and sl >= new_sl) or (not is_buy and sl <= new_sl):
+            continue
+
+        # Broker refuses an SL closer than stops/freeze level to current price
+        min_dist = max(info.trade_stops_level, info.trade_freeze_level) * info.point
+        if abs(current - new_sl) < min_dist:
+            continue
+
+        _move_sl_to_breakeven(pos, new_sl)
 
 
-def _move_sl_to_breakeven(pos, entry):
-    info = mt5.symbol_info(pos.symbol)
-    if info is None:
-        return
+def _commission_offset(pos, info):
+    """Round-trip commission for `pos`, converted to a price distance."""
+    commission = _commission_usd(pos.symbol, pos.volume, pos.price_open, info)
+    per_point  = mt5.order_calc_profit(mt5.ORDER_TYPE_BUY, pos.symbol, pos.volume,
+                                       pos.price_open, pos.price_open + info.point)
+    if not per_point:
+        return 0.0
+    return commission / per_point * info.point
 
-    new_sl = round(entry, info.digits)
+
+def _move_sl_to_breakeven(pos, new_sl):
     request = {
         "action":   mt5.TRADE_ACTION_SLTP,
         "position": pos.ticket,
@@ -312,21 +330,15 @@ def _move_sl_to_breakeven(pos, entry):
     }
     result = mt5.order_send(request)
     if result and result.retcode == mt5.TRADE_RETCODE_DONE:
-        logger.info(
-            "CRT BE: %s ticket=%s SL moved to %s (break-even)",
-            pos.symbol, pos.ticket, new_sl
-        )
-        events.append({
-            "time":    datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "symbol":  pos.symbol,
-            "status":  "breakeven",
-            "ticket":  pos.ticket,
-            "new_sl":  new_sl,
-        })
+        _be_retry_after.pop(pos.ticket, None)
+        _record(pos.symbol, _position_tf(pos), "breakeven",
+                ticket=pos.ticket, entry=pos.price_open, new_sl=new_sl)
     else:
+        _be_retry_after[pos.ticket] = time.time() + BE_RETRY_SECONDS
         err = result.retcode if result else mt5.last_error()
         logger.warning(
-            "CRT BE failed: %s ticket=%s err=%s", pos.symbol, pos.ticket, err
+            "CRT BE failed: %s ticket=%s err=%s (retry in %ss)",
+            pos.symbol, pos.ticket, err, BE_RETRY_SECONDS
         )
 
 
@@ -350,6 +362,19 @@ def _place(symbol, tf_name, c2_time, signal, tick, to_close=()):
         return False
 
     side, sl, tp = signal["side"], signal["sl"], signal["tp"]
+    spread = tick.ask - tick.bid
+
+    # ------------------------------------------------------------------
+    # SL placement — beyond the sweep wick, not on it.
+    # MT5 candles are BID prices, but a SELL's SL triggers on the ASK, so a
+    # SELL SL exactly at C2.high is hit while bid is still one spread below
+    # the wick. Add the spread for SELL, plus an optional buffer on both sides.
+    # ------------------------------------------------------------------
+    buffer = spread * settings["sl_buffer_spreads"]
+    if side == "SELL":
+        sl += spread + buffer
+    else:
+        sl -= buffer
 
     if side == "BUY":
         order_type = mt5.ORDER_TYPE_BUY
@@ -368,8 +393,17 @@ def _place(symbol, tf_name, c2_time, signal, tick, to_close=()):
 
     risk   = abs(price - sl)
     reward = abs(tp - price)
-    spread = tick.ask - tick.bid
     rr     = reward / risk if risk > 0 else 0.0
+
+    # ------------------------------------------------------------------
+    # Minimum SL distance — a stop only a spread or two away is hit by noise
+    # ------------------------------------------------------------------
+    min_sl = spread * settings["min_sl_spreads"]
+    if risk < min_sl:
+        _record(symbol, tf_name, "skipped", side=side,
+                reason=f"SL distance below {settings['min_sl_spreads']}x spread",
+                price=price, sl=sl, spread=round(spread, info.digits))
+        return False
 
     volume = _normalize_volume(settings["lot"], info)
 
@@ -510,11 +544,11 @@ def _check(symbol, tf_name, running=()):
     key = (symbol, tf_name)
     if _last_bar.get(key) == c2_time:
         return False          # already evaluated this C2
-    _last_bar[key] = c2_time
 
     tick = mt5.symbol_info_tick(symbol)
     if tick is None:
-        return False
+        return False          # retry this C2 on the next poll
+    _last_bar[key] = c2_time
 
     # Entry is valid only at C3's open (= c2_time + tf_seconds).
     # Reject if we're too far into C3.
@@ -556,68 +590,70 @@ def _loop():
         settings["commission_pct_rate"],
     )
     while True:
-        if _enabled.is_set():
-            try:
-                if mt5.terminal_info() is None:
-                    mt5.initialize()
-                    for symbol in settings["symbols"]:
-                        mt5.symbol_select(symbol, True)
-
+        try:
+            if mt5.terminal_info() is None:
+                mt5.initialize()
                 for symbol in settings["symbols"]:
+                    mt5.symbol_select(symbol, True)
 
-                    # ── 1. Break-even management (always runs) ──────────────
+            for symbol in settings["symbols"]:
+
+                # ── 1. Break-even management ────────────────────────────
+                # Runs even after /bot/stop, so open trades are still managed.
+                try:
+                    _manage_breakeven(symbol)
+                except Exception:
+                    logger.exception("CRT breakeven check failed for %s", symbol)
+
+                if not _enabled.is_set():
+                    continue   # stopped: no new entries or overrides
+
+                # ── 2. One trade per pair, higher TF overrides ──────────
+                # If a CRT position is open, only timeframes HIGHER than
+                # the running trade are scanned:
+                #   H1 running → only H4 checked (M30/M15 skipped)
+                #   H4 running → nothing checked
+                # An opposite higher-TF signal closes the running trade
+                # and enters on the higher TF (see _check / _place).
+                running = _open_crt_positions(symbol)
+                if running:
+                    ranks = [TF_RANK.get(_position_tf(p)) for p in running]
+                    # Unknown magic (not ours) → treat as highest, block entries
+                    top_rank = min((r if r is not None else -1) for r in ranks)
+                    tf_names = [tf for tf in TIMEFRAMES if TF_RANK[tf] < top_rank]
+                    if not tf_names:
+                        continue
+                else:
+                    tf_names = list(TIMEFRAMES)
+
+                # ── 3. HTF-first entry scan (cascade) ───────────────────
+                # Scan order: H4 → H1 → M30 → M15
+                # The moment a trade is placed on a timeframe, ALL lower
+                # timeframes are skipped for this symbol in this cycle:
+                #   H4 fires  → H1, M30, M15 skipped
+                #   H1 fires  → M30, M15 skipped
+                #   M30 fires → M15 skipped
+                #   M15 fires → nothing lower to skip
+                for idx, tf_name in enumerate(tf_names):
                     try:
-                        _manage_breakeven(symbol)
+                        traded = _check(symbol, tf_name, running)
                     except Exception:
-                        logger.exception("CRT breakeven check failed for %s", symbol)
+                        logger.exception(
+                            "CRT check failed for %s %s", symbol, tf_name
+                        )
+                        traded = False
 
-                    # ── 2. One trade per pair, higher TF overrides ──────────
-                    # If a CRT position is open, only timeframes HIGHER than
-                    # the running trade are scanned:
-                    #   H1 running → only H4 checked (M30/M15 skipped)
-                    #   H4 running → nothing checked
-                    # An opposite higher-TF signal closes the running trade
-                    # and enters on the higher TF (see _check / _place).
-                    running = _open_crt_positions(symbol)
-                    if running:
-                        ranks = [TF_RANK.get(_position_tf(p)) for p in running]
-                        # Unknown magic (not ours) → treat as highest, block entries
-                        top_rank = min((r if r is not None else -1) for r in ranks)
-                        tf_names = [tf for tf in TIMEFRAMES if TF_RANK[tf] < top_rank]
-                        if not tf_names:
-                            continue
-                    else:
-                        tf_names = list(TIMEFRAMES)
-
-                    # ── 3. HTF-first entry scan (cascade) ───────────────────
-                    # Scan order: H4 → H1 → M30 → M15
-                    # The moment a trade is placed on a timeframe, ALL lower
-                    # timeframes are skipped for this symbol in this cycle:
-                    #   H4 fires  → H1, M30, M15 skipped
-                    #   H1 fires  → M30, M15 skipped
-                    #   M30 fires → M15 skipped
-                    #   M15 fires → nothing lower to skip
-                    for idx, tf_name in enumerate(tf_names):
-                        try:
-                            traded = _check(symbol, tf_name, running)
-                        except Exception:
-                            logger.exception(
-                                "CRT check failed for %s %s", symbol, tf_name
+                    if traded:
+                        skipped = tf_names[idx + 1:]   # all TFs after this one
+                        if skipped:
+                            logger.info(
+                                "CRT %s: trade placed on %s — skipping lower TFs: %s",
+                                symbol, tf_name, ", ".join(skipped),
                             )
-                            traded = False
+                        break   # do NOT check lower TFs for this symbol
 
-                        if traded:
-                            skipped = tf_names[idx + 1:]   # all TFs after this one
-                            if skipped:
-                                logger.info(
-                                    "CRT %s: trade placed on %s — skipping lower TFs: %s",
-                                    symbol, tf_name, ", ".join(skipped),
-                                )
-                            break   # do NOT check lower TFs for this symbol
-
-
-            except Exception:
-                logger.exception("CRT loop error")
+        except Exception:
+            logger.exception("CRT loop error")
 
         time.sleep(settings["poll_interval"])
 
@@ -649,6 +685,12 @@ def start_crt_bot():
             if s.strip()
         },
         "commission_pct_rate":    float(os.environ.get("CRT_COMMISSION_PCT_RATE", "0.04")),
+        # Extra SL room beyond the C2 wick, in multiples of the current spread
+        "sl_buffer_spreads":      float(os.environ.get("CRT_SL_BUFFER_SPREADS", "0")),
+        # Skip setups whose SL is closer than N x spread (0 disables)
+        "min_sl_spreads":         float(os.environ.get("CRT_MIN_SL_SPREADS", "3")),
+        # Fraction of entry→TP distance at which SL moves to break-even
+        "be_trigger":             float(os.environ.get("CRT_BE_TRIGGER", "0.47")),
     })
 
     for symbol in settings["symbols"]:

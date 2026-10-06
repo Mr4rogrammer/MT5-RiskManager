@@ -231,17 +231,26 @@ candle close is caught quickly.
 
 | Setup | Condition | Entry | SL | TP |
 | ----- | --------- | ----- | -- | -- |
-| **Bearish → SELL** | `C2.high > C1.high` and C2 closes inside C1 | Bid at C3 open | C2 high | C1 low |
-| **Bullish → BUY**  | `C2.low < C1.low` and C2 closes inside C1   | Ask at C3 open | C2 low  | C1 high |
+| **Bearish → SELL** | `C2.high > C1.high` and C2 closes inside C1 | Bid at C3 open | C2 high + spread (+ buffer) | C1 low |
+| **Bullish → BUY**  | `C2.low < C1.low` and C2 closes inside C1   | Ask at C3 open | C2 low (− buffer)  | C1 high |
 
 If C2 sweeps **both** sides, or neither, there is no signal. TP is the **opposite side
 of C1** (the full range), not 50% of it.
 
+**Why the SELL stop gets an extra spread:** MT5 candles are drawn from bid prices, but a
+SELL's stop loss triggers on the ask. A stop exactly at the C2 high would be hit while the
+bid is still one spread below the wick. `CRT_SL_BUFFER_SPREADS` adds more room on both sides.
+
+The bot trades the **pattern only**. It does not check key levels, higher-timeframe bias,
+sessions or lower-timeframe confirmation.
+
 ### Trade rules
 
-1. **Break-even.** On every poll, each open CRT position has its SL moved to the entry
-   price once price has covered about half of the entry→TP distance (the code uses 47%).
-   This always runs, even when the symbol is blocked for new entries.
+1. **Break-even.** Once price has covered `CRT_BE_TRIGGER` (default 47%) of the entry→TP
+   distance, the SL moves to entry **plus the round-trip commission** (minus it for a SELL),
+   so a break-even exit really nets about $0. The move is skipped while price is within
+   the broker's stops/freeze level. A rejected move is retried after 60 seconds, not every
+   poll. Break-even runs every poll, even after `/bot/stop`.
 2. **One trade per pair, higher timeframe wins.** While a CRT trade is open on a symbol,
    the bot only scans timeframes **higher** than that trade's:
 
@@ -265,14 +274,16 @@ of C1** (the full range), not 50% of it.
 ### Filters a signal must pass (in order)
 
 1. **Price still between SL and TP.** It is skipped if price has already moved past either.
-2. **Fees.** The expected profit at TP (in account currency, from `order_calc_profit`)
+2. **Minimum stop distance.** The SL must be at least `CRT_MIN_SL_SPREADS` (default 3) times the
+   current spread from entry. Stops only a spread or two away get hit by normal noise.
+3. **Fees.** The expected profit at TP (in account currency, from `order_calc_profit`)
    must be greater than the round-trip commission plus the spread cost. If MT5 cannot
    calculate profit, the bot falls back to a simpler check: the TP distance must be
    larger than the spread.
-3. **Reward:risk.** It must be at least `CRT_MIN_RR` (default 1.0; `0` turns this off).
-4. **Broker stops level.** SL and TP must both be at least `trade_stops_level` points
+4. **Reward:risk.** It must be at least `CRT_MIN_RR` (default 1.0; `0` turns this off).
+5. **Broker stops level.** SL and TP must both be at least `trade_stops_level` points
    from price.
-5. **No duplicates.** A position with the same magic number and comment must not
+6. **No duplicates.** A position with the same magic number and comment must not
    already be open.
 
 ### Commission model
@@ -300,7 +311,7 @@ The bot is **off by default**. Set `CRT_ENABLED=true` in `.env` or call:
 | ------ | ------------- | ----------------------------------------------- |
 | GET    | `/bot/status` | Enabled flag, Algo Trading flag, settings, last 100 events |
 | POST   | `/bot/start`  | Start trading                                   |
-| POST   | `/bot/stop`   | Stop trading (open trades keep their SL/TP)     |
+| POST   | `/bot/stop`   | Stop new entries and overrides. Open trades keep their SL/TP, and break-even still runs |
 
 Event statuses in `/bot/status`: `signal`, `opened`, `closed` (higher-TF override),
 `skipped` (with a `reason`), `rejected` (broker retcode), `error`, `breakeven`.
@@ -323,10 +334,69 @@ Event statuses in `/bot/status`: `signal`, `opened`, `closed` (higher-TF overrid
 | `CRT_COMMISSION_PER_LOT` | `5.0` | Flat round-trip commission per 1.0 lot, in account currency |
 | `CRT_COMMISSION_PCT_SYMBOLS` | `BTCUSD` | Comma-separated symbols that use percentage commission |
 | `CRT_COMMISSION_PCT_RATE` | `0.04` | Round-trip percentage rate for those symbols (`0.04` = 0.04%) |
+| `CRT_SL_BUFFER_SPREADS` | `0` | Extra SL room beyond the C2 wick, in multiples of the spread |
+| `CRT_MIN_SL_SPREADS` | `3` | Skip setups whose SL is closer than N × spread (`0` disables) |
+| `CRT_BE_TRIGGER` | `0.47` | Fraction of the entry→TP distance at which SL moves to break-even |
 
 If your broker uses suffixed symbol names (e.g. `XAUUSDm`), list them exactly in
 `CRT_SYMBOLS`. Note that `CRT_COMMISSION_PCT_SYMBOLS` is uppercased when it is read, so a
 symbol with a lowercase suffix (e.g. `BTCUSDm`) will not match and falls back to flat commission.
+
+## 2-Candle CRT Bot
+
+A second, independent bot (`app/candle_two_bot.py`) trades the same pattern **inside C2**,
+instead of waiting for C3. It runs at the same time as the 3-candle bot.
+
+| Candle | Role |
+| ------ | ---- |
+| **C1** | Range candle (last closed candle) |
+| **C2** | Candle now forming. It must open inside C1, sweep one side of C1, then cross back through its own open. **Entry happens here** |
+
+| Setup | Condition | Entry | SL | TP | Break-even trigger |
+| ----- | --------- | ----- | -- | -- | ------------------ |
+| **Bullish → BUY** | C2 goes below C1 low, then bid crosses back **above** C2 open | Ask | C2 low so far (− buffer) | C1 high | C1 low + 45% of C1 range |
+| **Bearish → SELL** | C2 goes above C1 high, then bid crosses back **below** C2 open | Bid | C2 high so far + spread (+ buffer) | C1 low | C1 high − 45% of C1 range |
+
+Example (BUY): C1 = 1.1000–1.1100, C2 opens at 1.1030, drops to 1.0990, and the bid crosses back
+above 1.1030 → BUY with SL 1.0990, TP 1.1100. When the bid reaches 1.1045, the SL moves to entry
++ commission. If entry is already past the 45% level, the SL moves as soon as price is far enough
+past entry for the broker to accept it.
+
+**Same rules as the 3-candle bot:** H4 → H1 → M30 → M15 priority, one trade per symbol, an
+opposite higher-timeframe signal closes the running trade and enters, a same-direction one
+is skipped, plus the same min-SL, commission + spread, reward:risk and stops-level filters.
+
+**Specific to this bot:**
+- **Fresh cross only.** The cross through C2's open must happen between two polls no more
+  than 3 poll intervals apart. A cross the bot didn't see (e.g. during a restart) is not chased.
+- **One trade per C2.** If the trade stops out, the same C2 candle is not traded again.
+- **Both sweeps → no trade.** If C2 has swept both sides of C1 before the cross, it is skipped.
+- Polls every 2 seconds by default, since entries happen mid-candle.
+
+**Running both bots together.** They don't block each other: the 3-candle bot manages only
+positions whose comment starts with `CRT `, and this bot only `CRT2 ` positions, so a symbol
+can have one trade from each. Magic numbers are `CRT2_MAGIC_BASE` + timeframe minutes:
+780015, 780030, 780060, 780240. The comment is `CRT2 <TF> <C1 open time>`; break-even uses it to
+find C1 again after a restart. Commission settings (`CRT_COMMISSION_*`) are shared.
+
+| Method | Endpoint       | Description                                        |
+| ------ | -------------- | -------------------------------------------------- |
+| GET    | `/bot2/status` | Enabled flag, Algo Trading flag, settings, last 100 events |
+| POST   | `/bot2/start`  | Start trading                                      |
+| POST   | `/bot2/stop`   | Stop new entries and overrides (break-even still runs) |
+
+| Variable | Default | Description |
+| -------- | ------- | ----------- |
+| `CRT2_ENABLED` | `false` | Start trading on boot |
+| `CRT2_SYMBOLS` | same as `CRT_SYMBOLS` | Symbols to trade |
+| `CRT2_LOT` | `0.01` | Fixed lot size |
+| `CRT2_DEVIATION` | `20` | Maximum slippage in points |
+| `CRT2_MAGIC_BASE` | `780000` | Base for the magic number of each timeframe |
+| `CRT2_POLL_INTERVAL` | `2` | Seconds between checks |
+| `CRT2_MIN_RR` | `0` | Minimum reward:risk (`0` disables) |
+| `CRT2_SL_BUFFER_SPREADS` | `0` | Extra SL room beyond the sweep, in multiples of the spread |
+| `CRT2_MIN_SL_SPREADS` | `3` | Skip setups whose SL is closer than N × spread (`0` disables) |
+| `CRT2_BE_TRIGGER` | `0.45` | How far into C1's range (from the swept side) break-even triggers |
 
 ## License
 
