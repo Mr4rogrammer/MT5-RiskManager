@@ -35,7 +35,7 @@ Settings (env vars, per bot — KEY is the upper-case key, e.g. IND_EMA2050_ENAB
   IND_<KEY>_ENABLED          true/false (default false, unless IND_ALL_ENABLED)
   IND_<KEY>_SYMBOLS          comma list (default: CRT_SYMBOLS)
   IND_<KEY>_TFS              comma list of H4 / H1 / M30 / M15 (default all four)
-  IND_<KEY>_LOT              (default 0.01)
+  IND_<KEY>_LOT              (default 0.01; only when BOTS_RISK_PCT=0)
   IND_<KEY>_SL_ATR           SL distance in ATR(14) (default 1.5)
   IND_<KEY>_RR               TP = RR × SL distance (default 2.0)
   IND_<KEY>_MAGIC_BASE       (default 800000 + 1000 × bot number)

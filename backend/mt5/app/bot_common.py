@@ -17,6 +17,12 @@ Commission settings are broker-wide and shared by every bot:
   CRT_COMMISSION_PER_LOT      flat round-trip $ per 1.0 lot (default 5.0)
   CRT_COMMISSION_PCT_SYMBOLS  symbols charged a % of notional instead (default BTCUSD)
   CRT_COMMISSION_PCT_RATE     round-trip % for those symbols (default 0.04 → 0.04 %)
+
+Position size is also shared by every bot:
+  BOTS_RISK_PCT               % of the account balance lost if the SL is hit (default 0.5).
+                              0 = use each bot's fixed lot setting instead.
+  BOTS_RISK_MAX_OVER          the broker's minimum lot may risk up to this × the target
+                              before the trade is skipped (default 1.5)
 """
 
 import logging
@@ -52,6 +58,9 @@ BE_RETRY_SECONDS = 60
 
 # Broker commission settings — filled by load_fees()
 fees = {}
+
+# Position sizing settings — filled by load_fees()
+sizing = {}
 
 # Every Bot created, by name — used by the generic /bots routes
 BOTS = {}
@@ -90,6 +99,10 @@ def load_fees():
         }),
         "commission_pct_rate":    float(os.environ.get("CRT_COMMISSION_PCT_RATE", "0.04")),
     })
+    sizing.update({
+        "risk_pct":      float(os.environ.get("BOTS_RISK_PCT", "0.5")),
+        "risk_max_over": float(os.environ.get("BOTS_RISK_MAX_OVER", "1.5")),
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -110,6 +123,31 @@ def normalize_volume(volume, info):
     volume = math.floor(volume / step + 1e-9) * step
     volume = max(info.volume_min, min(volume, info.volume_max))
     return round(volume, 8)
+
+
+def risk_volume(side, symbol, price, sl, info):
+    """
+    Lot size that loses BOTS_RISK_PCT % of the balance if the SL is hit.
+
+    Returns (volume, None), or (None, (reason, details)) when the trade should be skipped.
+      e.g. balance $10 000, 0.5 % → $50 at risk; EURUSD SL 20 pips = $200 per lot
+           → 0.25 lot. Rounded DOWN to the volume step, so risk never exceeds the target
+           — except at the broker's minimum lot, allowed up to BOTS_RISK_MAX_OVER × target.
+    """
+    account = mt5.account_info()
+    if account is None or account.balance <= 0:
+        return None, ("account_info unavailable", {})
+    target   = account.balance * sizing["risk_pct"] / 100.0
+    loss_lot = profit_usd(side, symbol, 1.0, price, sl)
+    if not loss_lot:
+        return None, ("order_calc_profit failed for risk sizing", {})
+    volume = normalize_volume(target / abs(loss_lot), info)
+    risk   = abs(loss_lot) * volume
+    if risk > target * sizing["risk_max_over"]:
+        return None, (f"minimum lot risks over {sizing['risk_max_over']}x the "
+                      f"{sizing['risk_pct']}% target",
+                      {"volume": volume, "risk": round(risk, 2), "target": round(target, 2)})
+    return volume, None
 
 
 def commission_usd(symbol, volume, price, info):
@@ -337,8 +375,18 @@ class Bot:
                         price=price, sl=sl, spread=round(spread, info.digits))
             return False
 
+        # Size — BOTS_RISK_PCT % of the balance at the SL, or the bot's fixed lot
+        if sizing["risk_pct"] > 0:
+            volume, why = risk_volume(side, symbol, price, sl, info)
+            if volume is None:
+                reason, details = why
+                self.record(symbol, tf_name, "skipped", side=side, reason=reason,
+                            price=price, sl=sl, **details)
+                return False
+        else:
+            volume = normalize_volume(self.settings["lot"], info)
+
         # Fees — TP profit must exceed round-trip commission + spread cost
-        volume          = normalize_volume(self.settings["lot"], info)
         tp_profit       = profit_usd(side, symbol, volume, price, tp)
         spread_cost     = spread_cost_usd(symbol, volume, tick)
         commission_cost = commission_usd(symbol, volume, price, info)

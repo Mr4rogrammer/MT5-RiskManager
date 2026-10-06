@@ -326,7 +326,7 @@ Event statuses in `/bot/status`: `signal`, `opened`, `closed` (higher-TF overrid
 | -------- | ------- | ----------- |
 | `CRT_ENABLED` | `false` | Start trading on boot |
 | `CRT_SYMBOLS` | `XAUUSD,EURUSD,GBPUSD,AUDUSD,USDCHF,NZDUSD,USDCAD` | Symbols to trade |
-| `CRT_LOT` | `0.01` | Fixed lot size (normalized to the broker's volume step/min/max) |
+| `CRT_LOT` | `0.01` | Fixed lot size — used only when `BOTS_RISK_PCT=0` (normalized to the broker's volume step/min/max) |
 | `CRT_DEVIATION` | `20` | Maximum slippage in points |
 | `CRT_MAGIC_BASE` | `770000` | Base for the magic number of each timeframe |
 | `CRT_POLL_INTERVAL` | `5` | Seconds between checks |
@@ -390,7 +390,7 @@ find C1 again after a restart. Commission settings (`CRT_COMMISSION_*`) are shar
 | -------- | ------- | ----------- |
 | `CRT2_ENABLED` | `false` | Start trading on boot |
 | `CRT2_SYMBOLS` | same as `CRT_SYMBOLS` | Symbols to trade |
-| `CRT2_LOT` | `0.01` | Fixed lot size |
+| `CRT2_LOT` | `0.01` | Fixed lot size (only when `BOTS_RISK_PCT=0`) |
 | `CRT2_DEVIATION` | `20` | Maximum slippage in points |
 | `CRT2_MAGIC_BASE` | `780000` | Base for the magic number of each timeframe |
 | `CRT2_POLL_INTERVAL` | `2` | Seconds between checks |
@@ -434,7 +434,7 @@ and let the dashboard judge it.
 | -------- | ------- | ----------- |
 | `DSW_ENABLED` | `false` | Start trading on boot |
 | `DSW_SYMBOLS` | same as `CRT_SYMBOLS` | Symbols to trade |
-| `DSW_LOT` | `0.01` | Fixed lot |
+| `DSW_LOT` | `0.01` | Fixed lot (only when `BOTS_RISK_PCT=0`) |
 | `DSW_MAGIC_BASE` | `790000` | Trades use 790030 |
 | `DSW_TREND` | `against` | `against` / `with` / `off` |
 | `DSW_SMA_DAYS` | `20` | Daily trend average length |
@@ -520,6 +520,20 @@ position. On a **netting** account MT5 keeps one position per symbol and the bot
 merge into each other's trades. At start (and again once MT5 is logged in), every bot checks
 the account type and refuses to trade on netting, recording the reason in its events. Set
 `BOTS_ALLOW_NETTING=true` only if you run a single bot per symbol.
+
+**Position size: 0.5 % of the balance per trade.** Every bot sizes its lot so that hitting the
+SL loses `BOTS_RISK_PCT` % (default `0.5`) of the account balance, so a 5-pip EURUSD stop and a
+$10 gold stop risk the same money and the bots' results are comparable in $ as well as R.
+
+| Balance | Risk | Trade | Lot |
+| ------- | ---- | ----- | --- |
+| $10,000 | $50 | EURUSD, SL 20 pips ($200 per lot) | 0.25 |
+| $10,000 | $50 | XAUUSD, SL $5 ($500 per lot) | 0.10 |
+
+The lot is rounded **down** to the broker's volume step, so the risk never exceeds the target.
+The one exception is the broker's minimum lot (usually 0.01): if even that risks more than
+`BOTS_RISK_MAX_OVER` × the target (default 1.5), the trade is skipped and shows up in the
+dashboard's skip reasons. Set `BOTS_RISK_PCT=0` to go back to each bot's fixed `*_LOT`.
 
 Tested with all 13 bots polling 25× faster than live, plus 8 extra journal writers, for 20 s:
 0 overlapping MT5 calls, 0 database errors, no deadlock. With the MT5 lock disabled, the same

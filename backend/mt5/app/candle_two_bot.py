@@ -32,7 +32,7 @@ numbers (CRT2_MAGIC_BASE + TF minutes) and the comment "CRT2 <TF> <C1 open time>
 Settings (env vars):
   CRT2_ENABLED            true/false   start trading on boot (default false)
   CRT2_SYMBOLS            comma list   (default: same as CRT_SYMBOLS)
-  CRT2_LOT                fixed lot    (default 0.01)
+  CRT2_LOT                fixed lot    (default 0.01; only when BOTS_RISK_PCT=0)
   CRT2_DEVIATION          max slippage in points (default 20)
   CRT2_MAGIC_BASE         (default 780000)
   CRT2_POLL_INTERVAL      seconds between checks (default 2 — entries are intrabar)

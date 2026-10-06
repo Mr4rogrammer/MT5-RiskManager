@@ -24,7 +24,7 @@ break-even mechanics, journaling to SQLite) live in bot_common.py.
 Settings (env vars):
   CRT_ENABLED             true/false   start trading on boot (default false)
   CRT_SYMBOLS             comma list   (default XAUUSD,EURUSD,GBPUSD,AUDUSD,USDCHF,NZDUSD,USDCAD)
-  CRT_LOT                 fixed lot    (default 0.01)
+  CRT_LOT                 fixed lot    (default 0.01; only when BOTS_RISK_PCT=0)
   CRT_DEVIATION           max slippage in points (default 20)
   CRT_MAGIC_BASE          (default 770000)
   CRT_POLL_INTERVAL       seconds between checks (default 5)

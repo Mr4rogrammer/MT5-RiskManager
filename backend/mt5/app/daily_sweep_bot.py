@@ -34,7 +34,7 @@ Shared rules (filters, one trade per pair, journaling to SQLite) live in bot_com
 Settings (env vars):
   DSW_ENABLED            true/false   start trading on boot (default false)
   DSW_SYMBOLS            comma list   (default: same as CRT_SYMBOLS)
-  DSW_LOT                fixed lot    (default 0.01)
+  DSW_LOT                fixed lot    (default 0.01; only when BOTS_RISK_PCT=0)
   DSW_DEVIATION          max slippage in points (default 20)
   DSW_MAGIC_BASE         (default 790000; trades use 790030 = M30 confirmation)
   DSW_POLL_INTERVAL      seconds between checks (default 5)
