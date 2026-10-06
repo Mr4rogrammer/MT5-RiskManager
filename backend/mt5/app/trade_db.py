@@ -33,6 +33,11 @@ How trades get in:
                                  are adopted; on first sync per bot, the last
                                  BOT_DB_BACKFILL_DAYS of history are back-filled
 
+Threads: every bot thread and the sync thread share ONE connection behind ONE
+re-entrant lock (_lock), so writes are serialized and SQLite never sees two writers.
+Lock order is always MT5_LOCK → _lock (see mt5_guard.py): nothing in this module calls
+MT5 while holding _lock, so the two locks cannot deadlock.
+
 Bots are recognised by magic number: register_bot(name, magic_base, ...) claims
 magic_base + 15/30/60/240. Use a different magic_base for every bot.
 
@@ -55,6 +60,8 @@ import time
 from datetime import datetime, timedelta, timezone
 
 import MetaTrader5 as mt5
+
+from mt5_guard import MT5_LOCK
 
 logger = logging.getLogger(__name__)
 
@@ -176,7 +183,7 @@ def init():
     with _lock:
         if _conn is None:
             os.makedirs(DB_DIR, exist_ok=True)
-            _conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+            _conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=30)
             _conn.row_factory = sqlite3.Row
             # Rollback journal (not WAL): a single writer, and the snapshot copy
             # must be one self-contained file.
@@ -579,7 +586,8 @@ def _sync_loop():
     time.sleep(5)   # let both bots register first
     while True:
         try:
-            sync()
+            with MT5_LOCK:        # MT5 reads; the DB writes inside take _lock second
+                sync()
         except Exception:
             logger.exception("trade_db: sync failed")
         if time.time() - _last_compact >= 3600:

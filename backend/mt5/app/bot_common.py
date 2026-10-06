@@ -30,6 +30,7 @@ from datetime import datetime, timezone
 import MetaTrader5 as mt5
 
 import trade_db
+from mt5_guard import MT5_LOCK
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,9 @@ BE_RETRY_SECONDS = 60
 
 # Broker commission settings — filled by load_fees()
 fees = {}
+
+# Every Bot created, by name — used by the generic /bots routes
+BOTS = {}
 
 
 def load_fees():
@@ -155,7 +159,8 @@ class Bot:
 
     Adding a new strategy: create a module with a check(symbol, tf, running) and a
     be_trigger(pos) function, a Bot with a unique name, prefix and magic_base, and
-    call BOT.start(...) from app.py. It appears on the dashboard automatically.
+    call BOT.start(...) from app.py. It appears on the dashboard and under the
+    /bots API routes automatically.
 
     Required settings: symbols, lot, deviation, magic_base, poll_interval,
     min_rr, min_sl_spreads.
@@ -170,6 +175,7 @@ class Bot:
         self.settings = {}
         self.events   = deque(maxlen=100)
         self.enabled  = threading.Event()
+        BOTS[name] = self
         self._started = False
         self._start_lock = threading.Lock()
         self._be_retry_after = {}   # ticket -> unix time
@@ -473,10 +479,11 @@ class Bot:
             description=self.description,
             state_fn=lambda: (dict(self.settings), self.enabled.is_set()))
 
-        for symbol in self.settings["symbols"]:
-            if not mt5.symbol_select(symbol, True):
-                logger.warning("%s: could not select symbol %s (check broker symbol name)",
-                               self.label, symbol)
+        with MT5_LOCK:
+            for symbol in self.settings["symbols"]:
+                if not mt5.symbol_select(symbol, True):
+                    logger.warning("%s: could not select symbol %s (check broker symbol name)",
+                                   self.label, symbol)
 
         if enabled_by_default:
             self.enabled.set()
@@ -490,37 +497,42 @@ class Bot:
                     self.settings, fees)
         while True:
             try:
-                if mt5.terminal_info() is None:
-                    mt5.initialize()
-                    for symbol in self.settings["symbols"]:
-                        mt5.symbol_select(symbol, True)
+                with MT5_LOCK:
+                    if mt5.terminal_info() is None:
+                        mt5.initialize()
+                        for symbol in self.settings["symbols"]:
+                            mt5.symbol_select(symbol, True)
 
                 for symbol in self.settings["symbols"]:
-
-                    # 1. Break-even — runs even while stopped, so open trades are managed
-                    try:
-                        for pos in self.open_positions(symbol):
-                            self.breakeven(pos, be_trigger(pos))
-                    except Exception:
-                        logger.exception("%s breakeven check failed for %s", self.label, symbol)
-
-                    if not self.enabled.is_set():
-                        continue   # stopped: no new entries or overrides
-
-                    # 2. One trade per pair — only TFs higher than the running trade
-                    running  = self.open_positions(symbol)
-                    tf_names = self.scan_order(running)
-
-                    # 3. HTF-first scan: stop at the first TF that trades
-                    for tf_name in tf_names:
-                        try:
-                            if check(symbol, tf_name, running):
-                                break
-                        except Exception:
-                            logger.exception("%s check failed for %s %s",
-                                             self.label, symbol, tf_name)
+                    # One symbol at a time under MT5_LOCK; other bots run between symbols
+                    with MT5_LOCK:
+                        self._process(symbol, check, be_trigger)
 
             except Exception:
                 logger.exception("%s loop error", self.label)
 
             time.sleep(self.settings["poll_interval"])
+
+    def _process(self, symbol, check, be_trigger):
+        """One symbol: break-even, then the HTF-first entry scan. Caller holds MT5_LOCK."""
+        # 1. Break-even — runs even while stopped, so open trades are managed
+        try:
+            for pos in self.open_positions(symbol):
+                self.breakeven(pos, be_trigger(pos))
+        except Exception:
+            logger.exception("%s breakeven check failed for %s", self.label, symbol)
+
+        if not self.enabled.is_set():
+            return   # stopped: no new entries or overrides
+
+        # 2. One trade per pair — only TFs higher than the running trade
+        running  = self.open_positions(symbol)
+        tf_names = self.scan_order(running)
+
+        # 3. HTF-first scan: stop at the first TF that trades
+        for tf_name in tf_names:
+            try:
+                if check(symbol, tf_name, running):
+                    break
+            except Exception:
+                logger.exception("%s check failed for %s %s", self.label, symbol, tf_name)

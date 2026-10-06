@@ -399,6 +399,126 @@ find C1 again after a restart. Commission settings (`CRT_COMMISSION_*`) are shar
 | `CRT2_MIN_SL_SPREADS` | `3` | Skip setups whose SL is closer than N × spread (`0` disables) |
 | `CRT2_BE_TRIGGER` | `0.45` | How far into C1's range (from the swept side) break-even triggers |
 
+## Daily Sweep Bot
+
+A third bot (`app/daily_sweep_bot.py`): CRT on the **daily** candle, the classic
+"turtle soup" failed breakout.
+
+- **C1** = yesterday's broker-day candle, **C2** = today.
+- **SELL** when today has gone above yesterday's high and an M30 candle closes back below it,
+  **only if the daily trend is up** (yesterday's close above the 20-day average): a failed new
+  high at the end of a run, where breakout buyers are trapped.
+- **BUY** is the mirror: below yesterday's low, close back above it, daily trend down.
+- **SL** beyond today's extreme so far (+ spread for SELL). **TP** = the other side of
+  yesterday's range. No break-even by default, since targets are about 5× the risk.
+- One trade per symbol per day. If today sweeps both sides, no trade.
+
+**Why daily:** stops are 15–40 pips instead of 3–6, so spread and commission are a small part
+of each trade. They are what sinks the M15/M30 CRT setups.
+
+**What the backtest showed** (6 FX pairs, FXCM 1-minute bid/ask, Jan 2023 → Sep 2026,
+same costs and rules as live; gold not tested):
+
+| | Avg per trade | Win rate | Max drawdown |
+| - | - | - | - |
+| 3-candle CRT (live rules) | −0.25R | 37% | — |
+| Daily sweep, 2023–24 | +0.005R | 17% | ~148R |
+| Daily sweep, 2025–26 (not used for design) | +0.007R | 17% | ~141R |
+
+That's roughly break-even: far better than the M15–H4 CRT bots, but not a proven edge, and
+with long losing streaks. Trading **against** the trend beat no filter, which beat trading
+**with** it, in both periods. EURUSD and GBPUSD were positive in both. Run it at small size
+and let the dashboard judge it.
+
+| Variable | Default | Description |
+| -------- | ------- | ----------- |
+| `DSW_ENABLED` | `false` | Start trading on boot |
+| `DSW_SYMBOLS` | same as `CRT_SYMBOLS` | Symbols to trade |
+| `DSW_LOT` | `0.01` | Fixed lot |
+| `DSW_MAGIC_BASE` | `790000` | Trades use 790030 |
+| `DSW_TREND` | `against` | `against` / `with` / `off` |
+| `DSW_SMA_DAYS` | `20` | Daily trend average length |
+| `DSW_TP_FRAC` | `1.0` | TP as a fraction of the way to the other side of yesterday's range |
+| `DSW_MIN_SL_SPREADS` | `3` | Minimum SL distance in spreads |
+| `DSW_SL_BUFFER_SPREADS` | `0` | Extra SL room beyond today's extreme |
+| `DSW_BE_TRIGGER` | `0` | Break-even trigger as a fraction of entry→TP (`0` = off) |
+| `DSW_POLL_INTERVAL` / `DSW_MAX_SIGNAL_AGE` / `DSW_MIN_RR` / `DSW_DEVIATION` | `5` / `300` / `0` / `20` | As for the other bots |
+
+### Controlling any bot
+
+Generic routes work for every bot, including future ones:
+
+| Method | Endpoint | Description |
+| ------ | -------- | ----------- |
+| GET | `/bots` | All bots: name, title, enabled, settings |
+| GET | `/bots/<name>/status` | One bot's settings and last 100 events |
+| POST | `/bots/<name>/start` | Start new entries |
+| POST | `/bots/<name>/stop` | Stop new entries (open trades keep SL/TP, break-even still runs) |
+
+Bot names: `crt3`, `crt2`, `dsweep`. The older `/bot/*` and `/bot2/*` routes still work.
+
+## Backtesting
+
+`tools/backtest/` tests strategies on 1-minute bid/ask data (6 FX pairs, 2023 onward) with the
+same rules and costs as the live bots, before they trade real money. See
+[tools/backtest/README.md](tools/backtest/README.md).
+
+```bash
+cd tools/backtest && python3 -m venv venv && venv/bin/pip install -r requirements.txt
+./fetch_fxcm.sh && venv/bin/python backtest.py
+```
+
+## Indicator Bots (10 popular strategies)
+
+`app/indicator_bots.py` runs ten widely shared indicator strategies, **each as its own bot**,
+for side-by-side testing on a demo account. They all use the same rules so the comparison is
+fair:
+
+- **Timeframes:** H4, H1, M30 and M15, with the same rules as the CRT bots. H4 is checked
+  first, one trade per symbol, and an opposite higher-timeframe signal closes the trade and
+  enters. The dashboard's *bot × timeframe* table shows which timeframe works.
+- **Signals:** read on each closed candle, entered within 5 minutes of the close.
+- **Risk:** SL = 1.5 × ATR(14); TP = 2 × the SL distance (Bollinger targets the middle band).
+  No break-even.
+
+| Bot | Rule |
+| --- | ---- |
+| `ema2050` EMA 20/50 cross | EMA 20 crosses EMA 50 |
+| `ema921` EMA 9/21 + 200 trend | EMA 9 crosses EMA 21, only in the direction of EMA 200 |
+| `golden` Golden / death cross | SMA 50 crosses SMA 200 |
+| `macd` MACD + 200 EMA | MACD crosses its signal below zero (buy) / above zero (sell), with the EMA 200 trend |
+| `rsi` RSI 30/70 reversal | RSI(14) crosses back above 30 / below 70 |
+| `bbands` Bollinger reversion | Close back inside Bollinger(20, 2) after closing outside → middle band |
+| `supertrend` Supertrend flip | Supertrend(10, 3) changes direction |
+| `donchian` Donchian breakout | Close above the previous 20-candle high / below the low |
+| `stoch` Stochastic + 200 EMA | %K crosses %D below 20 / above 80, with the EMA 200 trend |
+| `ichimoku` Ichimoku TK cross | Tenkan crosses Kijun with price on the right side of the cloud |
+
+Turn them all on with `IND_ALL_ENABLED=true`, or one at a time with `IND_<KEY>_ENABLED=true`
+(e.g. `IND_MACD_ENABLED`). Per-bot settings: `IND_<KEY>_SYMBOLS`, `_TFS`, `_LOT`, `_SL_ATR`,
+`_RR`, `_MAGIC_BASE` (default 801000, 802000, … 810000), `_MAX_SIGNAL_AGE`, `_MIN_SL_SPREADS`,
+`_POLL_INTERVAL`. Start and stop each one with `/bots/<key>/start|stop`.
+
+The dashboard's **leaderboard** ranks every bot, and each bot card has its own equity curve.
+Judge them on average R over 100+ trades, not on win rate or the first few weeks.
+
+### Threads and locking
+
+Every bot runs in its own thread, plus one journal-sync thread. Two locks keep that safe:
+
+- **`MT5_LOCK`** (`mt5_guard.py`). The MetaTrader5 package isn't reliably thread-safe, so a bot
+  holds this lock while it processes one symbol (milliseconds), and the sync thread holds it
+  while reading MT5 history. Bots still run in parallel, but MT5 calls never overlap.
+- **The journal lock** (`trade_db.py`). One SQLite connection, one re-entrant lock, so there
+  is a single writer.
+- **Lock order is always MT5 lock → journal lock.** Nothing calls MT5 while holding the
+  journal lock, so the two can't deadlock. The dashboard reads only the snapshot file and never
+  touches either lock.
+
+Tested with all 13 bots polling 25× faster than live, plus 8 extra journal writers, for 20 s:
+0 overlapping MT5 calls, 0 database errors, no deadlock. With the MT5 lock disabled, the same
+test showed ~17,000 overlapping calls.
+
 ## Bot Code Layout
 
 All bot logic lives in `backend/mt5/app/`:
@@ -409,6 +529,9 @@ All bot logic lives in `backend/mt5/app/`:
 | `trade_db.py` | SQLite trade journal (see below) |
 | `crt_bot.py` | 3-candle CRT strategy only: the signal, SL/TP, break-even trigger |
 | `candle_two_bot.py` | 2-candle CRT strategy only |
+| `daily_sweep_bot.py` | Daily sweep strategy only |
+| `indicator_bots.py` | The 10 indicator strategies |
+| `mt5_guard.py` | The lock that serializes MT5 calls across bot threads |
 
 The bots don't use the API helpers in `lib.py` or `routes/`; `routes/bot.py` only exposes
 start/stop/status.
