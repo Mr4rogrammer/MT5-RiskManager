@@ -12,3 +12,18 @@ services:
     ports:
       - 3000:3000   # VNC web access
       - 5001:5001   # MT5 Flask API
+
+  # Bot performance dashboard: a static page that reads the bots' SQLite
+  # snapshot (config/data/dashboard.db) in the browser. No API involved.
+  dashboard:
+    build:
+      context: backend/dashboard
+    container_name: bot-dashboard
+    restart: unless-stopped
+    environment:
+      DASHBOARD_USER: ${DASHBOARD_USER}
+      DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD}
+    volumes:
+      - ./config:/botconfig:ro   # only data/dashboard.db is served (see nginx.conf)
+    ports:
+      - 8080:80

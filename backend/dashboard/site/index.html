@@ -1,0 +1,1007 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bot Performance</title>
+<style>
+  :root {
+    color-scheme: light;
+    --page:           #f9f9f7;
+    --surface-1:      #fcfcfb;
+    --text-primary:   #0b0b0b;
+    --text-secondary: #52514e;
+    --text-muted:     #898781;
+    --grid:           #e1e0d9;
+    --baseline:       #c3c2b7;
+    --border:         rgba(11,11,11,0.10);
+    --wash:           rgba(11,11,11,0.04);
+    --good-text:      #006300;
+    --bad-text:       #b42626;
+    --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a; --series-4: #eda100;
+    --series-5: #e87ba4; --series-6: #008300; --series-7: #4a3aa7; --series-8: #e34948;
+    --status-critical: #d03b3b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --page:           #0d0d0d;
+      --surface-1:      #1a1a19;
+      --text-primary:   #ffffff;
+      --text-secondary: #c3c2b7;
+      --text-muted:     #898781;
+      --grid:           #2c2c2a;
+      --baseline:       #383835;
+      --border:         rgba(255,255,255,0.10);
+      --wash:           rgba(255,255,255,0.05);
+      --good-text:      #0ca30c;
+      --bad-text:       #e66767;
+      --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --series-4: #c98500;
+      --series-5: #d55181; --series-6: #008300; --series-7: #9085e9; --series-8: #e66767;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --page:           #0d0d0d;
+    --surface-1:      #1a1a19;
+    --text-primary:   #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted:     #898781;
+    --grid:           #2c2c2a;
+    --baseline:       #383835;
+    --border:         rgba(255,255,255,0.10);
+    --wash:           rgba(255,255,255,0.05);
+    --good-text:      #0ca30c;
+    --bad-text:       #e66767;
+    --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --series-4: #c98500;
+    --series-5: #d55181; --series-6: #008300; --series-7: #9085e9; --series-8: #e66767;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: var(--page);
+    color: var(--text-primary);
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  .wrap { max-width: 1200px; margin: 0 auto; padding: 24px 16px 48px; }
+
+  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; margin-bottom: 16px; }
+  header h1 { font-size: 20px; font-weight: 600; margin: 0; }
+  #snapshot { color: var(--text-secondary); font-size: 13px; }
+  header .actions { margin-left: auto; display: flex; gap: 8px; }
+
+  button, select {
+    font: inherit; color: var(--text-primary); background: var(--surface-1);
+    border: 1px solid var(--border); border-radius: 6px; padding: 5px 10px; cursor: pointer;
+  }
+  button:hover, select:hover { background: var(--wash); }
+  button:focus-visible, select:focus-visible, [tabindex]:focus-visible {
+    outline: 2px solid var(--series-1); outline-offset: 2px;
+  }
+
+  .filters { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; margin-bottom: 20px; }
+  .filters label { display: flex; align-items: center; gap: 6px; color: var(--text-secondary); font-size: 13px; }
+  .segmented { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+  .segmented button { border: 0; border-radius: 0; padding: 5px 10px; background: var(--surface-1); }
+  .segmented button + button { border-left: 1px solid var(--border); }
+  .segmented button[aria-pressed="true"] { font-weight: 600; background: var(--wash); }
+
+  #content { transition: opacity .2s; }
+  #content.loading { opacity: .55; }
+
+  .card {
+    background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px;
+    padding: 16px; min-width: 0;
+  }
+  .card h2 { font-size: 14px; font-weight: 600; margin: 0 0 2px; }
+  .card .sub { color: var(--text-secondary); font-size: 12px; margin: 0 0 12px; }
+
+  .top { display: grid; grid-template-columns: minmax(220px, 1fr) 3fr; gap: 12px; margin-bottom: 12px; }
+  .hero .label { color: var(--text-secondary); font-size: 13px; }
+  .hero .value { font-size: 48px; font-weight: 600; line-height: 1.1; margin: 6px 0 4px; letter-spacing: -0.5px; }
+  .hero .note { color: var(--text-secondary); font-size: 12px; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+  .tile .label { color: var(--text-secondary); font-size: 13px; }
+  .tile .value { font-size: 24px; font-weight: 600; margin-top: 4px; }
+  .tile .note { color: var(--text-muted); font-size: 12px; margin-top: 2px; }
+
+  .bots { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; margin-bottom: 12px; }
+  .bot-head { display: flex; align-items: center; gap: 8px; }
+  .bot-head h2 { margin: 0; }
+  .bot-head .state { margin-left: auto; font-size: 12px; color: var(--text-secondary); }
+  .bot-head .state.on { color: var(--good-text); }
+  .bot .sub { margin-top: 6px; }
+  .bot-stats { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
+  .bot-stats .label { color: var(--text-secondary); font-size: 12px; }
+  .bot-stats .value { font-size: 16px; font-weight: 600; margin-top: 2px; white-space: nowrap; }
+  dl.settings { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; font-size: 12px; }
+  dl.settings dt { color: var(--text-secondary); }
+  dl.settings dd { margin: 0; overflow-wrap: anywhere; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+  .full { margin-bottom: 12px; }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 0 0 8px; font-size: 12px; color: var(--text-secondary); }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .key-line { width: 14px; height: 2px; border-radius: 1px; display: inline-block; }
+  .key-rect { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+
+  .chart { position: relative; width: 100%; }
+  .chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+  .chart .tick { fill: var(--text-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+  .chart .endlabel { fill: var(--text-secondary); font-size: 11px; }
+  .overlay { fill: transparent; cursor: crosshair; }
+  .overlay:focus { outline: none; }
+
+  .tooltip {
+    position: fixed; z-index: 10; pointer-events: none; display: none;
+    background: var(--surface-1); color: var(--text-primary); border: 1px solid var(--border);
+    border-radius: 8px; padding: 8px 10px; font-size: 12px; box-shadow: 0 4px 16px rgba(0,0,0,.12);
+    min-width: 140px; max-width: 280px;
+  }
+  .tooltip .tt-title { color: var(--text-secondary); margin-bottom: 4px; }
+  .tooltip .tt-row { display: flex; align-items: center; gap: 8px; }
+  .tooltip .tt-row strong { font-variant-numeric: tabular-nums; }
+  .tooltip .tt-row .name { color: var(--text-secondary); }
+
+  .bars { display: grid; gap: 10px; }
+  .bar-group .bar-label { font-size: 12px; color: var(--text-secondary); margin-bottom: 4px; }
+  .bar-row { display: flex; align-items: center; gap: 6px; height: 12px; margin-top: 2px; }
+  .bar { height: 12px; border-radius: 0 4px 4px 0; min-width: 2px; flex: none; }
+  .bar:hover, .bar:focus { filter: brightness(1.12); }
+  .bar-value { font-size: 11px; color: var(--text-secondary); font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+  th { color: var(--text-secondary); font-weight: 500; font-size: 12px; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  tr:last-child td { border-bottom: 0; }
+  .pos { color: var(--good-text); }
+  .neg { color: var(--bad-text); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; vertical-align: 1px; }
+  .muted { color: var(--text-muted); }
+  details summary { cursor: pointer; color: var(--text-secondary); font-size: 12px; margin-top: 10px; }
+  details[open] summary { margin-bottom: 8px; }
+
+  .notice { padding: 24px; text-align: center; color: var(--text-secondary); }
+  .notice strong { display: block; color: var(--text-primary); margin-bottom: 4px; }
+  .error { color: var(--status-critical); }
+
+  @media (max-width: 860px) {
+    .top, .grid2 { grid-template-columns: 1fr; }
+    .hero .value { font-size: 40px; }
+    header .actions { margin-left: 0; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Bot performance</h1>
+    <span id="snapshot">Loading…</span>
+    <div class="actions">
+      <button id="refresh" type="button">Refresh</button>
+      <button id="theme" type="button" aria-label="Toggle theme">Theme: auto</button>
+    </div>
+  </header>
+
+  <div class="filters" id="filters">
+    <div class="segmented" role="group" aria-label="Date range" id="range">
+      <button type="button" data-days="7">7 days</button>
+      <button type="button" data-days="30" aria-pressed="true">30 days</button>
+      <button type="button" data-days="90">90 days</button>
+      <button type="button" data-days="0">All</button>
+    </div>
+    <label>Bot <select id="f-bot"><option value="">All bots</option></select></label>
+    <label>Symbol <select id="f-symbol"><option value="">All symbols</option></select></label>
+    <label>Timeframe
+      <select id="f-tf">
+        <option value="">All</option><option>H4</option><option>H1</option><option>M30</option><option>M15</option>
+      </select>
+    </label>
+  </div>
+
+  <div id="content"></div>
+</div>
+<div class="tooltip" id="tooltip" role="status" aria-live="polite"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/sql-wasm.js"></script>
+<script>
+(function () {
+  "use strict";
+
+  // ------------------------------------------------------------------
+  // Config
+  // ------------------------------------------------------------------
+  var DB_URL = "data/dashboard.db";
+  var REFRESH_MS = 60000;
+  // Bots come from the database's `bots` table, so a new strategy appears here
+  // without changing this page. Each keeps the color slot it was given when it
+  // first registered — color follows the bot, never its rank.
+  var TF_ORDER = ["H4", "H1", "M30", "M15"];
+  var REASONS = [
+    ["tp", "Take profit"], ["sl", "Stop loss"], ["breakeven", "Break-even"],
+    ["override", "Higher-TF override"], ["manual", "Manual"], ["stopout", "Stop out"], ["other", "Other"]
+  ];
+
+  // ------------------------------------------------------------------
+  // State
+  // ------------------------------------------------------------------
+  var SQL = null;
+  var data = null;             // { trades, events, meta }
+  var filters = { days: 30, bot: "", symbol: "", tf: "" };
+  var content = document.getElementById("content");
+  var tooltip = document.getElementById("tooltip");
+
+  // ------------------------------------------------------------------
+  // Small DOM helpers (all data goes in via textContent)
+  // ------------------------------------------------------------------
+  function el(tag, attrs, children) {
+    var node = document.createElement(tag);
+    if (attrs) for (var k in attrs) {
+      if (k === "text") node.textContent = attrs[k];
+      else if (k === "class") node.className = attrs[k];
+      else if (k === "style") node.setAttribute("style", attrs[k]);
+      else node.setAttribute(k, attrs[k]);
+    }
+    (children || []).forEach(function (c) { if (c) node.appendChild(c); });
+    return node;
+  }
+  function svg(tag, attrs) {
+    var node = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    for (var k in attrs) {
+      if (k === "text") node.textContent = attrs[k];
+      else node.setAttribute(k, attrs[k]);
+    }
+    return node;
+  }
+
+  // ------------------------------------------------------------------
+  // Formatting
+  // ------------------------------------------------------------------
+  var MINUS = "−";
+  function signed(v, digits) {
+    if (v === null || v === undefined || isNaN(v)) return "—";
+    var s = Math.abs(v).toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits });
+    if (v > 0) return "+" + s;
+    if (v < 0) return MINUS + s;
+    return s;
+  }
+  function money(v) { return signed(v, 2); }
+  function rMult(v) { return v === null || v === undefined || isNaN(v) ? "—" : signed(v, 2) + "R"; }
+  function pct(v) { return v === null || isNaN(v) ? "—" : Math.round(v * 100) + "%"; }
+  function pf(v) { return v === null ? "—" : (v === Infinity ? "∞" : v.toFixed(2)); }
+  function price(v) { return v === null || v === undefined ? "—" : String(+v.toFixed(5)); }
+  function when(sec) {
+    if (!sec) return "—";
+    return new Date(sec * 1000).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  }
+  function signClass(v) { return v > 0 ? "pos" : (v < 0 ? "neg" : ""); }
+  function botInfo(b) { return (data && data.bots[b]) || {}; }
+  function botName(b) { return botInfo(b).label || b; }
+  function botSlot(b) {
+    var slot = botInfo(b).color_slot;
+    return slot >= 1 && slot <= 8 ? slot : null;
+  }
+  function botColor(b) {
+    // Past 8 bots there is no distinct hue left: they render neutral and are told
+    // apart by name (legend, labels, tables) — never by a generated color
+    var slot = botSlot(b);
+    return slot ? "var(--series-" + slot + ")" : "var(--text-muted)";
+  }
+
+  // ------------------------------------------------------------------
+  // Loading
+  // ------------------------------------------------------------------
+  function rows(db, sql, params) {
+    var stmt = db.prepare(sql);
+    if (params) stmt.bind(params);
+    var out = [];
+    while (stmt.step()) out.push(stmt.getAsObject());
+    stmt.free();
+    return out;
+  }
+
+  function load() {
+    content.classList.add("loading");
+    var ready = SQL ? Promise.resolve(SQL) : initSqlJs({
+      locateFile: function (f) { return "https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/" + f; }
+    }).then(function (s) { SQL = s; return s; });
+
+    return ready.then(function () {
+      return fetch(DB_URL, { cache: "no-store" });
+    }).then(function (res) {
+      if (res.status === 404) throw { notice: true };
+      if (!res.ok) throw new Error("HTTP " + res.status + " loading the database");
+      return res.arrayBuffer();
+    }).then(function (buf) {
+      var db = new SQL.Database(new Uint8Array(buf));
+      try {
+        var meta = {};
+        rows(db, "SELECT key, value FROM meta").forEach(function (r) { meta[r.key] = r.value; });
+        var offset = parseInt(meta.broker_offset_seconds || "0", 10) || 0;
+        // Trade times are broker time; shift to real UTC so they match events and the viewer's clock
+        var trades = rows(db, "SELECT * FROM trades").map(function (t) {
+          if (t.opened_at) t.opened_utc = t.opened_at - offset;
+          if (t.closed_at) t.closed_utc = t.closed_at - offset;
+          return t;
+        });
+        var events = rows(db,
+          "SELECT bot, symbol, timeframe, status, reason, time FROM events " +
+          "WHERE status IN ('signal','opened','skipped','rejected','error')");
+        var bots = {};
+        try {
+          rows(db, "SELECT * FROM bots").forEach(function (b) {
+            try { b.settings = b.settings ? JSON.parse(b.settings) : {}; } catch (e) { b.settings = {}; }
+            bots[b.name] = b;
+          });
+        } catch (e) { /* snapshot from before the bots table existed */ }
+        data = { trades: trades, events: events, meta: meta, offset: offset, bots: bots };
+      } finally {
+        db.close();
+      }
+      populateFilters();
+      render();
+    }).catch(function (err) {
+      if (data) {                         // keep the last good render
+        setSnapshot("Refresh failed — showing previous data", true);
+        return;
+      }
+      content.textContent = "";
+      if (err && err.notice) {
+        content.appendChild(el("div", { class: "card notice" }, [
+          el("strong", { text: "No data yet" }),
+          el("span", { text: "The bots write the first snapshot about 30 seconds after they start." })
+        ]));
+      } else {
+        content.appendChild(el("div", { class: "card notice error", text: String(err && err.message || err) }));
+      }
+      setSnapshot("No snapshot", false);
+    }).then(function () {
+      content.classList.remove("loading");
+    });
+  }
+
+  function setSnapshot(extra, isError) {
+    var node = document.getElementById("snapshot");
+    var at = data && data.meta.snapshot_at ? new Date(parseInt(data.meta.snapshot_at, 10) * 1000) : null;
+    var text = at ? "Snapshot " + at.toLocaleTimeString() + " · updates every minute" : "";
+    if (extra) text = text ? text + " · " + extra : extra;
+    node.textContent = text;
+    node.className = isError ? "error" : "";
+  }
+
+  // ------------------------------------------------------------------
+  // Filters
+  // ------------------------------------------------------------------
+  function allBots() {
+    if (!data) return [];
+    var set = {};
+    Object.keys(data.bots).forEach(function (b) { set[b] = 1; });
+    data.trades.forEach(function (t) { set[t.bot] = 1; });
+    data.events.forEach(function (e) { if (e.bot) set[e.bot] = 1; });
+    return Object.keys(set).sort(function (a, b) {
+      return (botSlot(a) || 99) - (botSlot(b) || 99) || a.localeCompare(b);
+    });
+  }
+
+  function fillSelect(select, values, labelFn, current) {
+    var first = select.options[0];
+    select.textContent = "";
+    select.appendChild(first);
+    values.forEach(function (v) { select.appendChild(el("option", { value: v, text: labelFn(v) })); });
+    select.value = values.indexOf(current) >= 0 ? current : "";
+  }
+
+  function populateFilters() {
+    fillSelect(document.getElementById("f-bot"), allBots(), botName, filters.bot);
+    var syms = {};
+    data.trades.forEach(function (t) { syms[t.symbol] = 1; });
+    fillSelect(document.getElementById("f-symbol"), Object.keys(syms).sort(), String, filters.symbol);
+  }
+
+  function inSlice(t) {
+    return (!filters.bot || t.bot === filters.bot) &&
+           (!filters.symbol || t.symbol === filters.symbol) &&
+           (!filters.tf || t.timeframe === filters.tf);
+  }
+  function sinceUtc() {
+    return filters.days ? Date.now() / 1000 - filters.days * 86400 : 0;
+  }
+
+  document.getElementById("range").addEventListener("click", function (e) {
+    var b = e.target.closest("button");
+    if (!b) return;
+    filters.days = parseInt(b.getAttribute("data-days"), 10);
+    this.querySelectorAll("button").forEach(function (x) { x.setAttribute("aria-pressed", x === b ? "true" : "false"); });
+    render();
+  });
+  [["f-bot", "bot"], ["f-symbol", "symbol"], ["f-tf", "tf"]].forEach(function (p) {
+    document.getElementById(p[0]).addEventListener("change", function () { filters[p[1]] = this.value; render(); });
+  });
+  document.getElementById("refresh").addEventListener("click", load);
+
+  // Theme toggle: auto → light → dark (remembered in this browser only)
+  var themes = ["auto", "light", "dark"];
+  var themeBtn = document.getElementById("theme");
+  function applyTheme(t) {
+    if (t === "auto") document.documentElement.removeAttribute("data-theme");
+    else document.documentElement.setAttribute("data-theme", t);
+    themeBtn.textContent = "Theme: " + t;
+  }
+  var savedTheme = "auto";
+  try { savedTheme = localStorage.getItem("dash-theme") || "auto"; } catch (e) {}
+  applyTheme(savedTheme);
+  themeBtn.addEventListener("click", function () {
+    savedTheme = themes[(themes.indexOf(savedTheme) + 1) % themes.length];
+    applyTheme(savedTheme);
+    try { localStorage.setItem("dash-theme", savedTheme); } catch (e) {}
+    if (data) render();
+  });
+
+  // ------------------------------------------------------------------
+  // Stats
+  // ------------------------------------------------------------------
+  function outcome(t) {
+    if (t.exit_reason === "breakeven") return "be";
+    return t.net > 0 ? "win" : "loss";
+  }
+
+  function summarize(trades) {
+    var s = { n: trades.length, win: 0, loss: 0, be: 0, net: 0, gw: 0, gl: 0, rSum: 0, rN: 0, reasons: {} };
+    trades.forEach(function (t) {
+      var o = outcome(t);
+      s[o]++;
+      s.net += t.net || 0;
+      // Profit factor counts wins and losses only; break-even exits (± commission) are left out
+      if (o === "win") s.gw += t.net; else if (o === "loss") s.gl -= t.net || 0;
+      if (t.r_multiple !== null && t.r_multiple !== undefined) { s.rSum += t.r_multiple; s.rN++; }
+      s.reasons[t.exit_reason || "other"] = (s.reasons[t.exit_reason || "other"] || 0) + 1;
+    });
+    s.winRate = s.win + s.loss ? s.win / (s.win + s.loss) : null;
+    s.avgR = s.rN ? s.rSum / s.rN : null;
+    s.pf = s.gl > 0 ? s.gw / s.gl : (s.gw > 0 ? Infinity : null);
+    return s;
+  }
+
+  // ------------------------------------------------------------------
+  // Render
+  // ------------------------------------------------------------------
+  function render() {
+    if (!data) return;
+    setSnapshot();
+    var since = sinceUtc();
+    var closed = data.trades.filter(function (t) {
+      return t.status === "closed" && inSlice(t) && (t.closed_utc || 0) >= since;
+    }).sort(function (a, b) { return a.closed_utc - b.closed_utc; });
+    var open = data.trades.filter(function (t) { return t.status === "open" && inSlice(t); });
+    var events = data.events.filter(function (e) { return inSlice({ bot: e.bot, symbol: e.symbol, timeframe: e.timeframe }) && e.time >= since; });
+
+    var bots = allBots().filter(function (b) { return !filters.bot || b === filters.bot; });
+    var s = summarize(closed);
+
+    content.textContent = "";
+    content.appendChild(renderTop(s, open));
+    content.appendChild(renderBots(closed, open, bots));
+    content.appendChild(el("div", { class: "full" }, [renderEquity(closed, bots, since)]));
+    content.appendChild(el("div", { class: "grid2" }, [renderReasons(closed, bots), renderFunnel(events, bots)]));
+    content.appendChild(el("div", { class: "full" }, [renderBreakdown(closed)]));
+    content.appendChild(el("div", { class: "grid2" }, [renderBySymbol(closed), renderSkips(events)]));
+    content.appendChild(el("div", { class: "full" }, [renderOpen(open)]));
+    content.appendChild(el("div", { class: "full" }, [renderRecent(closed)]));
+    afterMount.splice(0).forEach(function (fn) { fn(); });
+  }
+  var afterMount = [];
+
+  function tile(label, value, note, cls) {
+    return el("div", { class: "card tile" }, [
+      el("div", { class: "label", text: label }),
+      el("div", { class: "value " + (cls || ""), text: value }),
+      note ? el("div", { class: "note", text: note }) : null
+    ]);
+  }
+
+  function renderTop(s, open) {
+    var rangeText = filters.days ? "Last " + filters.days + " days" : "All time";
+    var hero = el("div", { class: "card hero" }, [
+      el("div", { class: "label", text: "Net profit / loss" }),
+      el("div", { class: "value " + signClass(s.net), text: money(s.net) }),
+      el("div", { class: "note", text: rangeText + " · closed trades · after commission and swap" })
+    ]);
+    var tiles = el("div", { class: "tiles" }, [
+      tile("Closed trades", s.n.toLocaleString(), s.win + " W · " + s.loss + " L · " + s.be + " BE"),
+      tile("Win rate", pct(s.winRate), "Wins ÷ (wins + losses), break-even excluded"),
+      tile("Average R", rMult(s.avgR), "Net result ÷ money at risk", signClass(s.avgR)),
+      tile("Profit factor", pf(s.pf), "Gross wins ÷ gross losses (BE excluded)"),
+      tile("Open trades", String(open.length), open.length ? "Shown below" : "None open")
+    ]);
+    return el("div", { class: "top" }, [hero, tiles]);
+  }
+
+  // ---- Bots: one card per strategy -------------------------------------
+  var SETTING_LABELS = {
+    lot: "Lot", min_rr: "Min RR", min_sl_spreads: "Min SL (× spread)",
+    sl_buffer_spreads: "SL buffer (× spread)", be_trigger: "BE trigger",
+    max_signal_age: "Max signal age (s)", poll_interval: "Poll (s)", magic_base: "Magic base"
+  };
+
+  function renderBots(closed, open, bots) {
+    var wrap = el("div", { class: "bots" });
+    bots.forEach(function (b) {
+      var info = botInfo(b), st = summarize(closed.filter(function (t) { return t.bot === b; }));
+      var nOpen = open.filter(function (t) { return t.bot === b; }).length;
+      var state = info.enabled === 1 ? "Running" : (info.enabled === 0 ? "Stopped" : "Unknown");
+      var settings = info.settings || {};
+
+      var dl = el("dl", { class: "settings" });
+      Object.keys(SETTING_LABELS).forEach(function (k) {
+        if (settings[k] === undefined) return;
+        dl.appendChild(el("dt", { text: SETTING_LABELS[k] }));
+        dl.appendChild(el("dd", { text: k === "be_trigger" ? pct(settings[k]) : String(settings[k]) }));
+      });
+      if (settings.symbols) {
+        dl.appendChild(el("dt", { text: "Symbols" }));
+        dl.appendChild(el("dd", { text: settings.symbols.join(", ") }));
+      }
+
+      wrap.appendChild(el("div", { class: "card bot" }, [
+        el("div", { class: "bot-head" }, [
+          el("i", { class: "key-rect", style: "background:" + botColor(b) }),
+          el("h2", { text: botName(b) }),
+          el("span", { class: "state " + (info.enabled === 1 ? "on" : "off"), text: (info.enabled === 1 ? "● " : "○ ") + state })
+        ]),
+        info.description ? el("p", { class: "sub", text: info.description }) : null,
+        el("div", { class: "bot-stats" }, [
+          miniStat("Net", money(st.net), signClass(st.net)),
+          miniStat("Trades", String(st.n)),
+          miniStat("Win rate", pct(st.winRate)),
+          miniStat("Avg R", rMult(st.avgR), signClass(st.avgR)),
+          miniStat("Open", String(nOpen))
+        ]),
+        Object.keys(settings).length ? el("details", {}, [el("summary", { text: "Settings" }), dl]) : null
+      ]));
+    });
+    return wrap;
+  }
+
+  function miniStat(label, value, cls) {
+    return el("div", {}, [el("div", { class: "label", text: label }), el("div", { class: "value " + (cls || ""), text: value })]);
+  }
+
+  // ---- Equity curve: cumulative net per bot (step line) ---------------
+  function renderEquity(closed, bots, since) {
+    var card = el("div", { class: "card" }, [
+      el("h2", { text: "Cumulative net profit" }),
+      el("p", { class: "sub", text: "Running total of closed-trade net P/L, per bot" })
+    ]);
+    if (!closed.length) {
+      card.appendChild(el("div", { class: "notice", text: "No closed trades in this range." }));
+      return card;
+    }
+
+    // Build per-bot step series
+    var series = bots.map(function (b) {
+      var total = 0, pts = [];
+      closed.forEach(function (t) { if (t.bot === b) { total += t.net || 0; pts.push({ x: t.closed_utc, y: total, t: t }); } });
+      return { bot: b, pts: pts };
+    }).filter(function (sr) { return sr.pts.length; });
+
+    if (series.length > 1) {
+      card.appendChild(el("div", { class: "legend" }, series.map(function (sr) {
+        return el("span", {}, [el("i", { class: "key-line", style: "background:" + botColor(sr.bot) }), document.createTextNode(botName(sr.bot))]);
+      })));
+    }
+
+    var chart = el("div", { class: "chart" });
+    card.appendChild(chart);
+    var x0 = since || closed[0].closed_utc;
+    var x1 = Math.max(closed[closed.length - 1].closed_utc, Date.now() / 1000);
+    if (x1 <= x0) x1 = x0 + 3600;
+
+    function draw() {
+      chart.textContent = "";
+      var W = Math.max(chart.clientWidth, 280), H = 280;
+      // Right margin fits the longest end label
+      var longest = 0;
+      series.forEach(function (sr) {
+        var last = sr.pts[sr.pts.length - 1].y;
+        longest = Math.max(longest, (botName(sr.bot) + " " + money(last)).length);
+      });
+      // Narrow screens drop the end labels; the legend above still names every line
+      var endLabels = series.length > 1 && W >= 520;
+      var m = { l: 56, r: endLabels ? Math.min(longest * 6.3 + 14, W * 0.35) : 16, t: 10, b: 28 };
+      var pw = W - m.l - m.r, ph = H - m.t - m.b;
+
+      var ys = [0];
+      series.forEach(function (sr) { sr.pts.forEach(function (p) { ys.push(p.y); }); });
+      var ticks = niceTicks(Math.min.apply(null, ys), Math.max.apply(null, ys), 5);
+      var y0 = ticks[0], y1 = ticks[ticks.length - 1];
+      function X(x) { return m.l + (x - x0) / (x1 - x0) * pw; }
+      function Y(y) { return m.t + (1 - (y - y0) / (y1 - y0 || 1)) * ph; }
+
+      var root = svg("svg", { viewBox: "0 0 " + W + " " + H, role: "img",
+        "aria-label": "Cumulative net profit per bot over time" });
+
+      ticks.forEach(function (v) {
+        root.appendChild(svg("line", { x1: m.l, x2: m.l + pw, y1: Y(v), y2: Y(v),
+          style: "stroke:" + (v === 0 ? "var(--baseline)" : "var(--grid)") + ";stroke-width:1" }));
+        root.appendChild(svg("text", { x: m.l - 8, y: Y(v) + 4, "text-anchor": "end", class: "tick", text: signed(v, Math.abs(y1 - y0) < 10 ? 2 : 0) }));
+      });
+      timeTicks(x0, x1, Math.max(2, Math.floor(pw / 110))).forEach(function (tx) {
+        root.appendChild(svg("text", { x: X(tx), y: H - 8, "text-anchor": "middle", class: "tick",
+          text: new Date(tx * 1000).toLocaleDateString(undefined, { month: "short", day: "numeric" }) }));
+      });
+
+      series.forEach(function (sr) {
+        var d = "M" + X(x0) + "," + Y(0), last = 0;
+        sr.pts.forEach(function (p) { d += " H" + X(p.x) + " V" + Y(p.y); last = p.y; });
+        d += " H" + X(x1);
+        root.appendChild(svg("path", { d: d, style: "fill:none;stroke:" + botColor(sr.bot) + ";stroke-width:2;stroke-linejoin:round;stroke-linecap:round" }));
+        sr.endY = Y(last); sr.last = last;
+      });
+
+      // End labels (only when series separate at the right edge)
+      if (endLabels) {
+        var sorted = series.slice().sort(function (a, b) { return a.endY - b.endY; });
+        var clear = sorted.every(function (sr, i) { return i === 0 || sr.endY - sorted[i - 1].endY >= 14; });
+        if (clear) series.forEach(function (sr) {
+          root.appendChild(svg("text", { x: X(x1) + 6, y: sr.endY + 4, class: "endlabel", text: botName(sr.bot) + " " + money(sr.last) }));
+        });
+      }
+
+      // Crosshair + tooltip: snaps to the nearest trade close
+      var xs = [];
+      closed.forEach(function (t) { if (bots.indexOf(t.bot) >= 0) xs.push(t.closed_utc); });
+      var cross = svg("line", { y1: m.t, y2: m.t + ph, style: "stroke:var(--text-muted);stroke-width:1;display:none" });
+      root.appendChild(cross);
+      var dots = series.map(function (sr) {
+        var c = svg("circle", { r: 4, style: "fill:" + botColor(sr.bot) + ";stroke:var(--surface-1);stroke-width:2;display:none" });
+        root.appendChild(c);
+        return c;
+      });
+      var overlay = svg("rect", { x: m.l, y: m.t, width: pw, height: ph, class: "overlay", tabindex: 0,
+        "aria-label": "Chart crosshair. Use left and right arrow keys to step through trades." });
+      root.appendChild(overlay);
+      var idx = -1;
+
+      function show(i, clientX, clientY) {
+        idx = Math.max(0, Math.min(xs.length - 1, i));
+        var x = xs[idx], px = X(x);
+        cross.setAttribute("x1", px); cross.setAttribute("x2", px); cross.style.display = "";
+        tooltip.textContent = "";
+        tooltip.appendChild(el("div", { class: "tt-title", text: new Date(x * 1000).toLocaleString() }));
+        series.forEach(function (sr, k) {
+          var v = 0;
+          sr.pts.forEach(function (p) { if (p.x <= x) v = p.y; });
+          dots[k].setAttribute("cx", px); dots[k].setAttribute("cy", Y(v)); dots[k].style.display = "";
+          tooltip.appendChild(el("div", { class: "tt-row" }, [
+            el("i", { class: "key-line", style: "background:" + botColor(sr.bot) }),
+            el("strong", { text: money(v) }),
+            el("span", { class: "name", text: botName(sr.bot) })
+          ]));
+        });
+        var trade = closed.filter(function (t) { return t.closed_utc === x; })[0];
+        if (trade) tooltip.appendChild(el("div", { class: "tt-title", style: "margin:6px 0 0",
+          text: botName(trade.bot) + ": " + trade.symbol + " " + trade.timeframe + " " + trade.side + " · " + (trade.exit_reason || "") + " · " + money(trade.net) }));
+        placeTooltip(clientX, clientY);
+      }
+      function hide() {
+        cross.style.display = "none";
+        dots.forEach(function (d) { d.style.display = "none"; });
+        tooltip.style.display = "none";
+      }
+      overlay.addEventListener("pointermove", function (e) {
+        var rect = root.getBoundingClientRect();
+        var sx = (e.clientX - rect.left) * (W / rect.width);
+        var xv = x0 + (sx - m.l) / pw * (x1 - x0);
+        var best = 0;
+        for (var i = 1; i < xs.length; i++) if (Math.abs(xs[i] - xv) < Math.abs(xs[best] - xv)) best = i;
+        show(best, e.clientX, e.clientY);
+      });
+      overlay.addEventListener("pointerleave", hide);
+      overlay.addEventListener("blur", hide);
+      overlay.addEventListener("keydown", function (e) {
+        if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+        e.preventDefault();
+        var next = idx < 0 ? xs.length - 1 : idx + (e.key === "ArrowRight" ? 1 : -1);
+        var r = overlay.getBoundingClientRect();
+        show(next, r.left + (X(xs[Math.max(0, Math.min(xs.length - 1, next))]) - m.l) / pw * r.width, r.top + 20);
+      });
+
+      chart.appendChild(root);
+    }
+    // Measure only once the card is in the page (see render)
+    afterMount.push(function () { draw(); watchResize(chart, draw); });
+
+    // Table twin
+    var byDay = {};
+    closed.forEach(function (t) {
+      if (bots.indexOf(t.bot) < 0) return;
+      var day = new Date(t.closed_utc * 1000).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+      byDay[day] = byDay[day] || { order: t.closed_utc };
+      byDay[day][t.bot] = (byDay[day][t.bot] || 0) + (t.net || 0);
+    });
+    var days = Object.keys(byDay).sort(function (a, b) { return byDay[b].order - byDay[a].order; });
+    card.appendChild(el("details", {}, [
+      el("summary", { text: "Show as table (net per day)" }),
+      tableEl(["Day"].concat(series.map(function (sr) { return botName(sr.bot); })),
+        days.map(function (d) {
+          return [d].concat(series.map(function (sr) {
+            var v = byDay[d][sr.bot];
+            return v === undefined ? { text: "—", cls: "num muted" } : { text: money(v), cls: "num " + signClass(v) };
+          }));
+        }), [false].concat(series.map(function () { return true; })))
+    ]));
+    return card;
+  }
+
+  // ---- Exit reasons: % of each bot's closed trades ----------------------
+  function renderReasons(closed, bots) {
+    var card = el("div", { class: "card" }, [
+      el("h2", { text: "How trades closed" }),
+      el("p", { class: "sub", text: "Share of each bot's closed trades, by exit" })
+    ]);
+    var active = bots.filter(function (b) { return closed.some(function (t) { return t.bot === b; }); });
+    if (!active.length) {
+      card.appendChild(el("div", { class: "notice", text: "No closed trades in this range." }));
+      return card;
+    }
+    var per = {};
+    active.forEach(function (b) { per[b] = summarize(closed.filter(function (t) { return t.bot === b; })); });
+
+    if (active.length > 1) {
+      card.appendChild(el("div", { class: "legend" }, active.map(function (b) {
+        return el("span", {}, [el("i", { class: "key-rect", style: "background:" + botColor(b) }), document.createTextNode(botName(b))]);
+      })));
+    }
+    var list = el("div", { class: "bars" });
+    REASONS.forEach(function (r) {
+      var any = active.some(function (b) { return per[b].reasons[r[0]]; });
+      if (!any) return;
+      var group = el("div", { class: "bar-group" }, [el("div", { class: "bar-label", text: r[1] })]);
+      active.forEach(function (b) {
+        var n = per[b].reasons[r[0]] || 0, share = n / per[b].n;
+        // Bar length is the share of the track left after the value label
+        var bar = el("div", { class: "bar", tabindex: 0,
+          style: "width:calc((100% - 84px) * " + share.toFixed(4) + ");background:" + botColor(b),
+          "aria-label": botName(b) + ", " + r[1] + ": " + n + " trades, " + pct(share) });
+        hoverTip(bar, function () { return [botName(b) + " · " + r[1], pct(share) + " (" + n + " of " + per[b].n + ")"]; });
+        group.appendChild(el("div", { class: "bar-row" }, [
+          bar, el("span", { class: "bar-value", text: pct(share) + " (" + n + ")" })
+        ]));
+      });
+      list.appendChild(group);
+    });
+    card.appendChild(list);
+    return card;
+  }
+
+  // ---- Signal outcomes ---------------------------------------------------
+  function renderFunnel(events, bots) {
+    var card = el("div", { class: "card" }, [
+      el("h2", { text: "Signals vs trades" }),
+      el("p", { class: "sub", text: "How many detected setups became trades" })
+    ]);
+    var body = bots.map(function (b) {
+      var c = { signal: 0, opened: 0, skipped: 0, rejected: 0, error: 0 };
+      events.forEach(function (e) { if (e.bot === b && c[e.status] !== undefined) c[e.status]++; });
+      return [
+        { node: el("span", {}, [el("i", { class: "dot", style: "background:" + botColor(b) }), document.createTextNode(botName(b))]) },
+        { text: c.signal.toLocaleString(), cls: "num" },
+        { text: c.opened.toLocaleString(), cls: "num" },
+        { text: c.skipped.toLocaleString(), cls: "num" },
+        { text: (c.rejected + c.error).toLocaleString(), cls: "num" },
+        { text: c.signal ? pct(c.opened / c.signal) : "—", cls: "num" }
+      ];
+    });
+    card.appendChild(tableEl(["Bot", "Signals", "Opened", "Skipped", "Rejected / error", "Taken"], body,
+      [false, true, true, true, true, true]));
+    return card;
+  }
+
+  // ---- Bot × timeframe breakdown -----------------------------------------
+  function statRow(first, s) {
+    return first.concat([
+      { text: s.n.toLocaleString(), cls: "num" },
+      { text: pct(s.winRate), cls: "num" },
+      { text: String(s.reasons.tp || 0), cls: "num" },
+      { text: String(s.reasons.sl || 0), cls: "num" },
+      { text: String(s.reasons.breakeven || 0), cls: "num" },
+      { text: String(s.reasons.override || 0), cls: "num" },
+      { text: money(s.net), cls: "num " + signClass(s.net) },
+      { text: rMult(s.avgR), cls: "num " + signClass(s.avgR) },
+      { text: pf(s.pf), cls: "num" }
+    ]);
+  }
+  var STAT_HEAD = ["Trades", "Win rate", "TP", "SL", "BE", "Override", "Net", "Avg R", "PF"];
+
+  function renderBreakdown(closed) {
+    var card = el("div", { class: "card" }, [
+      el("h2", { text: "By bot and timeframe" }),
+      el("p", { class: "sub", text: "Closed trades in the selected range" })
+    ]);
+    var body = [];
+    allBots().forEach(function (b) {
+      var mine = closed.filter(function (t) { return t.bot === b; });
+      if (!mine.length) return;
+      body.push(statRow([
+        { node: el("span", {}, [el("i", { class: "dot", style: "background:" + botColor(b) }), el("strong", { text: botName(b) })]) },
+        { text: "All" }], summarize(mine)));
+      TF_ORDER.forEach(function (tf) {
+        var sub = mine.filter(function (t) { return t.timeframe === tf; });
+        if (sub.length) body.push(statRow([{ text: "" }, { text: tf }], summarize(sub)));
+      });
+    });
+    if (!body.length) {
+      card.appendChild(el("div", { class: "notice", text: "No closed trades in this range." }));
+      return card;
+    }
+    card.appendChild(tableEl(["Bot", "TF"].concat(STAT_HEAD), body, [false, false].concat(STAT_HEAD.map(function () { return true; }))));
+    return card;
+  }
+
+  function renderBySymbol(closed) {
+    var card = el("div", { class: "card" }, [
+      el("h2", { text: "By symbol" }),
+      el("p", { class: "sub", text: "Closed trades, best net first" })
+    ]);
+    var syms = {};
+    closed.forEach(function (t) { (syms[t.symbol] = syms[t.symbol] || []).push(t); });
+    var body = Object.keys(syms).map(function (k) { return { k: k, s: summarize(syms[k]) }; })
+      .sort(function (a, b) { return b.s.net - a.s.net; })
+      .map(function (x) {
+        var s = x.s;
+        return [{ text: x.k }, { text: String(s.n), cls: "num" }, { text: pct(s.winRate), cls: "num" },
+                { text: money(s.net), cls: "num " + signClass(s.net) }, { text: rMult(s.avgR), cls: "num " + signClass(s.avgR) }];
+      });
+    if (!body.length) { card.appendChild(el("div", { class: "notice", text: "No closed trades in this range." })); return card; }
+    card.appendChild(tableEl(["Symbol", "Trades", "Win rate", "Net", "Avg R"], body, [false, true, true, true, true]));
+    return card;
+  }
+
+  function normalizeReason(r) {
+    if (!r) return "(no reason)";
+    if (/^RR /.test(r)) return "Reward:risk below minimum";
+    return r.replace(/\d+(\.\d+)?/g, "N");
+  }
+
+  function renderSkips(events) {
+    var card = el("div", { class: "card" }, [
+      el("h2", { text: "Why setups were skipped" }),
+      el("p", { class: "sub", text: "Most common filter results" })
+    ]);
+    var counts = {};
+    events.forEach(function (e) {
+      if (e.status !== "skipped") return;
+      var key = e.bot + "\u0000" + normalizeReason(e.reason);
+      counts[key] = (counts[key] || 0) + 1;
+    });
+    var body = Object.keys(counts).sort(function (a, b) { return counts[b] - counts[a]; }).slice(0, 12).map(function (k) {
+      var parts = k.split("\u0000");
+      return [
+        { node: el("span", {}, [el("i", { class: "dot", style: "background:" + botColor(parts[0]) }), document.createTextNode(botName(parts[0]))]) },
+        { text: parts[1] }, { text: counts[k].toLocaleString(), cls: "num" }
+      ];
+    });
+    if (!body.length) { card.appendChild(el("div", { class: "notice", text: "No skipped setups in this range." })); return card; }
+    card.appendChild(tableEl(["Bot", "Reason", "Count"], body, [false, false, true]));
+    return card;
+  }
+
+  function tradeCells(t, closed) {
+    var cells = [
+      { text: when(closed ? t.closed_utc : t.opened_utc) },
+      { node: el("span", {}, [el("i", { class: "dot", style: "background:" + botColor(t.bot) }), document.createTextNode(botName(t.bot))]) },
+      { text: t.symbol }, { text: t.timeframe || "—" }, { text: t.side },
+      { text: price(t.entry_price), cls: "num" }, { text: price(t.sl_initial), cls: "num" }, { text: price(t.tp), cls: "num" }
+    ];
+    if (closed) {
+      cells.push({ text: price(t.exit_price), cls: "num" });
+      cells.push({ text: (REASONS.filter(function (r) { return r[0] === t.exit_reason; })[0] || [0, t.exit_reason || "—"])[1] });
+      cells.push({ text: money(t.net), cls: "num " + signClass(t.net) });
+      cells.push({ text: rMult(t.r_multiple), cls: "num " + signClass(t.r_multiple) });
+    } else {
+      cells.push({ text: t.be_sl ? "Yes" : "No" });
+    }
+    return cells;
+  }
+
+  function renderOpen(open) {
+    var card = el("div", { class: "card" }, [el("h2", { text: "Open trades" }),
+      el("p", { class: "sub", text: "As of the last snapshot" })]);
+    if (!open.length) { card.appendChild(el("div", { class: "notice", text: "No open trades." })); return card; }
+    var head = ["Opened", "Bot", "Symbol", "TF", "Side", "Entry", "Initial SL", "TP", "At break-even"];
+    card.appendChild(tableEl(head, open.sort(function (a, b) { return b.opened_utc - a.opened_utc; })
+      .map(function (t) { return tradeCells(t, false); }), [0, 0, 0, 0, 0, 1, 1, 1, 0]));
+    return card;
+  }
+
+  function renderRecent(closed) {
+    var card = el("div", { class: "card" }, [el("h2", { text: "Recent closed trades" }),
+      el("p", { class: "sub", text: "Latest 100 in the selected range" })]);
+    if (!closed.length) { card.appendChild(el("div", { class: "notice", text: "No closed trades in this range." })); return card; }
+    var head = ["Closed", "Bot", "Symbol", "TF", "Side", "Entry", "Initial SL", "TP", "Exit", "Reason", "Net", "R"];
+    card.appendChild(tableEl(head, closed.slice().reverse().slice(0, 100).map(function (t) { return tradeCells(t, true); }),
+      [0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 1, 1]));
+    return card;
+  }
+
+  // ------------------------------------------------------------------
+  // Shared pieces
+  // ------------------------------------------------------------------
+  function tableEl(head, body, numeric) {
+    var thead = el("thead", {}, [el("tr", {}, head.map(function (h, i) {
+      return el("th", { class: numeric && numeric[i] ? "num" : "", text: h, scope: "col" });
+    }))]);
+    var tbody = el("tbody", {}, body.map(function (row) {
+      return el("tr", {}, row.map(function (c) {
+        var td = el("td", { class: c.cls || "" });
+        if (c.node) td.appendChild(c.node); else td.textContent = c.text;
+        return td;
+      }));
+    }));
+    return el("div", { class: "table-wrap" }, [el("table", {}, [thead, tbody])]);
+  }
+
+  function placeTooltip(x, y) {
+    tooltip.style.display = "block";
+    var w = tooltip.offsetWidth, h = tooltip.offsetHeight;
+    var left = x + 14, top = y + 14;
+    if (left + w > window.innerWidth - 8) left = x - w - 14;
+    if (top + h > window.innerHeight - 8) top = y - h - 14;
+    tooltip.style.left = Math.max(8, left) + "px";
+    tooltip.style.top = Math.max(8, top) + "px";
+  }
+
+  function hoverTip(node, linesFn) {
+    function show(x, y) {
+      var lines = linesFn();
+      tooltip.textContent = "";
+      tooltip.appendChild(el("div", { class: "tt-title", text: lines[0] }));
+      tooltip.appendChild(el("div", { class: "tt-row" }, [el("strong", { text: lines[1] })]));
+      placeTooltip(x, y);
+    }
+    node.addEventListener("pointermove", function (e) { show(e.clientX, e.clientY); });
+    node.addEventListener("pointerleave", function () { tooltip.style.display = "none"; });
+    node.addEventListener("focus", function () { var r = node.getBoundingClientRect(); show(r.right, r.top); });
+    node.addEventListener("blur", function () { tooltip.style.display = "none"; });
+  }
+
+  function niceTicks(lo, hi, count) {
+    if (lo === hi) { lo -= 1; hi += 1; }
+    var span = hi - lo, step = Math.pow(10, Math.floor(Math.log10(span / count)));
+    var err = span / count / step;
+    if (err >= 7.5) step *= 10; else if (err >= 3.5) step *= 5; else if (err >= 1.5) step *= 2;
+    var start = Math.floor(lo / step) * step, end = Math.ceil(hi / step) * step, out = [];
+    for (var v = start; v <= end + step / 2; v += step) out.push(Math.round(v / step) * step);
+    return out;
+  }
+
+  function timeTicks(x0, x1, count) {
+    var day = 86400, span = x1 - x0;
+    var step = [day, 2 * day, 7 * day, 14 * day, 30 * day, 90 * day].filter(function (s) { return span / s <= count; })[0] || 180 * day;
+    var out = [], t = Math.ceil(x0 / day) * day;
+    for (; t <= x1; t += step) out.push(t);
+    return out;
+  }
+
+  var resizeWatchers = [];
+  function watchResize(node, fn) {
+    resizeWatchers.push({ node: node, fn: fn, w: node.clientWidth });
+  }
+  var resizeTimer = null;
+  window.addEventListener("resize", function () {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(function () {
+      resizeWatchers = resizeWatchers.filter(function (r) { return document.body.contains(r.node); });
+      resizeWatchers.forEach(function (r) { if (r.node.clientWidth !== r.w) { r.w = r.node.clientWidth; r.fn(); } });
+    }, 150);
+  });
+
+  load();
+  setInterval(load, REFRESH_MS);
+})();
+</script>
+</body>
+</html>

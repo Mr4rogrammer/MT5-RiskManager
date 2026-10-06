@@ -158,6 +158,7 @@ docker compose up -d --build --force-recreate
 | ---- | --------------- |
 | 3000 | MT5 VNC Web UI  |
 | 5001 | MT5 Flask API   |
+| 8080 | Bot dashboard   |
 
 ## API Documentation
 
@@ -397,6 +398,81 @@ find C1 again after a restart. Commission settings (`CRT_COMMISSION_*`) are shar
 | `CRT2_SL_BUFFER_SPREADS` | `0` | Extra SL room beyond the sweep, in multiples of the spread |
 | `CRT2_MIN_SL_SPREADS` | `3` | Skip setups whose SL is closer than N × spread (`0` disables) |
 | `CRT2_BE_TRIGGER` | `0.45` | How far into C1's range (from the swept side) break-even triggers |
+
+## Bot Code Layout
+
+All bot logic lives in `backend/mt5/app/`:
+
+| File | What it holds |
+| ---- | ------------- |
+| `bot_common.py` | Shared base for every bot: the `Bot` class (poll loop, H4 → M15 priority, one trade per symbol, higher-timeframe override), order placement with every filter (price, min SL, commission + spread, reward:risk, stops level), break-even mechanics, closing positions, and the commission/spread helpers |
+| `trade_db.py` | SQLite trade journal (see below) |
+| `crt_bot.py` | 3-candle CRT strategy only: the signal, SL/TP, break-even trigger |
+| `candle_two_bot.py` | 2-candle CRT strategy only |
+
+The bots don't use the API helpers in `lib.py` or `routes/`; `routes/bot.py` only exposes
+start/stop/status.
+
+### Adding a new strategy
+
+1. Create `app/my_bot.py` with:
+   - `check(symbol, tf_name, running)`: look for a setup; when there is one, compute
+     SL/TP and call `BOT.place(...)`, returning its result.
+   - `be_trigger(pos)`: the price at which break-even should trigger for an open position,
+     or `None`.
+2. Create the bot with a **unique** name, comment prefix and magic base, for example:
+   `Bot(name="fvg1", label="FVG", prefix="FVG ", title="FVG retest", description="...")`
+   with `magic_base` 790000 in its settings.
+3. Call its start function from `app.py`.
+
+It is journaled automatically and appears on the dashboard with its own color, stats and
+settings. No dashboard changes are needed.
+
+## Trade Journal (SQLite)
+
+`trade_db.py` records everything the bots do in `config/data/bots.db` on the VPS. The
+file stays small: a year of trades is a few MB.
+
+| Table | Contents |
+| ----- | -------- |
+| `trades` | One row per position: bot, symbol, timeframe, side, volume, entry, initial SL, TP, money at risk, spread at entry, break-even trigger/SL/time, exit price/time/reason, profit, commission, swap, net, R (net ÷ money at risk) |
+| `events` | Every signal, skip (with reason), open, rejection, override close and break-even |
+| `bots` | Each registered bot: name, description, color slot, current settings, running/stopped |
+| `meta` | Snapshot time, broker time offset |
+
+- **Exit reasons:** `tp`, `sl`, `breakeven` (SL filled at or past entry), `override` (closed
+  by a higher-timeframe signal), `manual`, `stopout`, `other`. They come from MT5's deal
+  history, so they're correct even when the broker closes the trade.
+- **History is imported.** On start, bot trades from the last `BOT_DB_BACKFILL_DAYS` (default
+  90) of MT5 history are imported, using the magic numbers. Open bot positions the journal
+  doesn't know about are adopted.
+- **Sync.** Every `BOT_DB_SYNC_SECONDS` (default 30), closed positions are completed from deal
+  history and a consistent copy is written to `config/data/dashboard.db`.
+- Query it directly on the VPS with `sqlite3 config/data/bots.db`, e.g.
+  `SELECT bot, exit_reason, COUNT(*), ROUND(SUM(net), 2) FROM trades GROUP BY 1, 2;`
+
+## Bot Dashboard
+
+`http://your-server-ip:8080` shows, for any date range, bot, symbol and timeframe:
+
+- net P/L, win rate (break-even excluded), average R, profit factor, open trades
+- one card per bot: description, running/stopped, headline stats, settings
+- cumulative net profit per bot over time (hover for values; also as a table)
+- how trades closed (TP / SL / break-even / override) per bot
+- signals vs trades taken, and the most common reasons setups were skipped
+- breakdown by bot × timeframe and by symbol, open trades, and the last 100 closed trades
+
+**There is no API behind it.** The `dashboard` container (nginx) serves a static page and
+the read-only `dashboard.db` snapshot. The page loads the database into the browser with
+sql.js and runs the queries there, refreshing every minute. Only that one file is reachable;
+the rest of `./config` is mounted read-only and not served.
+
+Set the login in `.env`. The container refuses to start without it:
+
+```env
+DASHBOARD_USER=admin
+DASHBOARD_PASSWORD=a-long-password
+```
 
 ## License
 

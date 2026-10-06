@@ -1,6 +1,7 @@
 from flask import Blueprint, jsonify
 from flasgger import swag_from
 import MetaTrader5 as mt5
+import bot_common
 import crt_bot
 import candle_two_bot
 
@@ -26,9 +27,8 @@ def bot_status():
         # MT5 "Algo Trading" button — must be true for orders to go through
         "algo_trading": terminal.trade_allowed if terminal is not None else None,
         "timeframes": list(crt_bot.TIMEFRAMES),
-        # sets (e.g. commission_pct_symbols) are not JSON serializable
-        "settings": {k: sorted(v) if isinstance(v, set) else v
-                     for k, v in crt_bot.settings.items()},
+        "settings": crt_bot.settings,
+        "fees": bot_common.fees,
         "events": list(crt_bot.events),
     })
 
@@ -86,6 +86,7 @@ def bot2_status():
         "algo_trading": terminal.trade_allowed if terminal is not None else None,
         "timeframes": list(crt_bot.TIMEFRAMES),
         "settings": candle_two_bot.settings,
+        "fees": bot_common.fees,
         "events": list(candle_two_bot.events),
     })
 
