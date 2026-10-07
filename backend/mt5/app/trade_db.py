@@ -188,6 +188,9 @@ _last_snapshot = 0.0
 _last_compact  = 0.0
 _bot_state_cache = {}  # bot name -> last written (settings JSON, enabled)
 
+# Newest raw events copied into the snapshot for the dashboard's bot log
+RECENT_EVENTS = int(os.environ.get("BOT_DB_RECENT_EVENTS", "300"))
+
 # Columns the dashboard reads; everything else stays in bots.db only
 SNAPSHOT_TRADE_COLUMNS = (
     "ticket, bot, symbol, timeframe, side, volume, opened_at, entry_price, sl_initial,"
@@ -311,6 +314,9 @@ def normalize_reason(reason):
         return ""
     if reason.startswith("RR "):
         return "Reward:risk below minimum"
+    m = re.match(r"rejected \d+", reason)        # keep the broker retcode, mask the rest
+    if m:
+        return m.group(0) + re.sub(r"\d+(\.\d+)?", "N", reason[m.end():])
     return re.sub(r"\d+(\.\d+)?", "N", reason)
 
 
@@ -681,6 +687,9 @@ def snapshot(force=False):
                 CREATE TABLE snap.event_counts AS SELECT * FROM main.event_counts;
                 CREATE TABLE snap.bots AS SELECT * FROM main.bots;
                 CREATE TABLE snap.meta AS SELECT * FROM main.meta;
+                CREATE TABLE snap.recent_events AS
+                    SELECT time, bot, symbol, timeframe, status, side, reason, details
+                    FROM main.events ORDER BY id DESC LIMIT {RECENT_EVENTS};
             """)
             _conn.execute("INSERT INTO snap.meta (key, value) VALUES ('snapshot_at', ?)",
                           (str(int(time.time())),))

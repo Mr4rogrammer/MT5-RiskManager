@@ -65,6 +65,28 @@ DEFAULT_SYMBOLS = "XAUUSD,EURUSD,GBPUSD,AUDUSD,USDCHF,NZDUSD,USDCAD"
 # Seconds before a rejected break-even modify is retried
 BE_RETRY_SECONDS = 60
 
+# What the common order_send retcodes mean, for the journal and the dashboard's log
+RETCODES = {
+    10004: "requote", 10006: "request rejected", 10007: "request canceled by trader",
+    10010: "only part of the request was completed", 10011: "request processing error",
+    10012: "request canceled by timeout", 10013: "invalid request", 10014: "invalid volume",
+    10015: "invalid price", 10016: "invalid stops", 10017: "trading disabled for the symbol",
+    10018: "market closed", 10019: "not enough money", 10020: "prices changed",
+    10021: "no quotes", 10022: "invalid expiration", 10024: "too many requests",
+    10026: "Algo Trading disabled by the server",
+    10027: "Algo Trading disabled in the terminal (Algo Trading button is off)",
+    10029: "order or position frozen", 10030: "filling mode not supported",
+    10031: "no connection to the trade server", 10033: "pending orders limit reached",
+    10034: "volume limit for the symbol reached", 10040: "positions limit reached",
+}
+
+
+def retcode_reason(result):
+    """'rejected 10027: Algo Trading disabled … (broker: AutoTrading disabled by client)'."""
+    text = RETCODES.get(result.retcode, "unknown retcode")
+    broker = (result.comment or "").strip()
+    return f"rejected {result.retcode}: {text}" + (f" (broker: {broker})" if broker else "")
+
 # Broker commission settings — filled by load_fees()
 fees = {}
 
@@ -474,7 +496,7 @@ class Bot:
                         mt5_error=str(mt5.last_error()), request=request)
             return False
         if result.retcode != mt5.TRADE_RETCODE_DONE:
-            self.record(symbol, tf_name, "rejected", side=side,
+            self.record(symbol, tf_name, "rejected", side=side, reason=retcode_reason(result),
                         retcode=result.retcode, comment=result.comment, request=request)
             return False
 

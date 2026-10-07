@@ -182,6 +182,7 @@
   .neg { color: var(--bad-text); }
   .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; vertical-align: 1px; }
   .muted { color: var(--text-muted); }
+  .log-detail { display: inline-block; max-width: 520px; white-space: normal; overflow-wrap: anywhere; font-size: 12px; }
   details summary { cursor: pointer; color: var(--text-secondary); font-size: 12px; margin-top: 10px; }
   details[open] summary { margin-bottom: 8px; }
 
@@ -388,7 +389,9 @@
           try { b.settings = b.settings ? JSON.parse(b.settings) : {}; } catch (e) { b.settings = {}; }
           bots[b.name] = b;
         });
-        data = { trades: trades, events: events, meta: meta, offset: offset, bots: bots, legacy: legacy };
+        // Newest raw events for the bot log (snapshots from before it existed have none)
+        var log = tables.recent_events ? rows(db, "SELECT * FROM recent_events ORDER BY time DESC") : null;
+        data = { trades: trades, events: events, meta: meta, offset: offset, bots: bots, legacy: legacy, log: log };
         lastVersion = got.version;   // only once it parsed, so a failed load is retried
       } finally {
         db.close();
@@ -555,6 +558,7 @@
     content.appendChild(el("div", { class: "grid2" }, [renderReasons(closed, bots), renderFunnel(events, bots)]));
     content.appendChild(el("div", { class: "full" }, [renderBreakdown(closed)]));
     content.appendChild(el("div", { class: "grid2" }, [renderBySymbol(closed), renderSkips(events)]));
+    content.appendChild(el("div", { class: "full" }, [renderLog()]));
     content.appendChild(el("div", { class: "full" }, [renderOpen(open)]));
     content.appendChild(el("div", { class: "full" }, [renderRecent(closed)]));
     content.appendChild(el("div", { class: "full" }, [renderReset()]));
@@ -1501,29 +1505,96 @@
   function normalizeReason(r) {
     if (!r) return "(no reason)";
     if (/^RR /.test(r)) return "Reward:risk below minimum";
+    var m = /^rejected \d+/.exec(r);           // keep the broker retcode, mask the rest
+    if (m) return m[0] + r.slice(m[0].length).replace(/\d+(\.\d+)?/g, "N");
     return r.replace(/\d+(\.\d+)?/g, "N");
+  }
+
+  var STATUS_LABELS = { skipped: "Skipped", rejected: "Rejected", error: "Error", signal: "Signal", opened: "Opened",
+    closed: "Closed", breakeven: "Break-even", partial: "Partial close", partial_skipped: "Partial skipped", control: "Start / stop" };
+
+  // ---- Bot log: the newest raw events from the snapshot --------------------
+  var LOG_VIEWS = [
+    ["problems", "Rejected & errors", ["rejected", "error"]],
+    ["skipped", "Skipped", ["skipped"]],
+    ["trades", "Trades", ["opened", "closed", "breakeven", "partial", "partial_skipped"]],
+    ["all", "All", null]
+  ];
+  var logView = "problems";
+  function logDetail(e) {
+    var d = {};
+    try { d = e.details ? JSON.parse(e.details) : {}; } catch (err) { d = {}; }
+    if (e.reason) return { text: e.reason, full: e.details || "" };
+    var skip = { time: 1, symbol: 1, timeframe: 1, status: 1, side: 1, request: 1, reason: 1 };
+    var parts = Object.keys(d).filter(function (k) { return !skip[k]; }).map(function (k) {
+      var v = d[k];
+      return k + " " + (typeof v === "object" ? JSON.stringify(v) : v);
+    });
+    return { text: parts.join(" · ") || "—", full: e.details || "" };
+  }
+  function renderLog() {
+    var card = el("div", { class: "card" }, [
+      el("h2", { text: "Bot log" }),
+      el("p", { class: "sub", text: "The newest events the bots recorded (follows the Bot, Symbol and Timeframe filters, not the date range). " +
+        "Updated with the snapshot, at most every few minutes; the full log is /config/flask.log on the server." })
+    ]);
+    if (!data.log) {
+      card.appendChild(el("div", { class: "notice", text: "Not in this snapshot yet — restart the MT5 container with the new code." }));
+      return card;
+    }
+    var seg = el("div", { class: "segmented", role: "group", "aria-label": "Show events", style: "margin-bottom:10px" });
+    LOG_VIEWS.forEach(function (v) {
+      var b = el("button", { type: "button", text: v[1], "aria-pressed": v[0] === logView ? "true" : "false" });
+      b.addEventListener("click", function () { logView = v[0]; render(); });
+      seg.appendChild(b);
+    });
+    card.appendChild(seg);
+    var want = LOG_VIEWS.filter(function (v) { return v[0] === logView; })[0][2];
+    var list = data.log.filter(function (e) {
+      return (!want || want.indexOf(e.status) >= 0) &&
+        (!e.symbol || inSlice({ bot: e.bot, symbol: e.symbol, timeframe: e.timeframe })) &&
+        (!filters.bot || e.bot === filters.bot);
+    }).slice(0, 100);
+    if (!list.length) {
+      card.appendChild(el("div", { class: "notice", text: "No such events among the newest " + data.log.length + "." }));
+      return card;
+    }
+    var body = list.map(function (e) {
+      var det = logDetail(e);
+      var bad = e.status === "rejected" || e.status === "error";
+      return [
+        { text: new Date(e.time * 1000).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" }) },
+        { node: el("span", {}, [el("i", { class: "dot", style: "background:" + botColor(e.bot) }), document.createTextNode(botName(e.bot))]) },
+        { text: e.symbol || "—" }, { text: e.timeframe || "—" }, { text: e.side || "—" },
+        { text: STATUS_LABELS[e.status] || e.status, cls: bad ? "neg" : (e.status === "skipped" ? "muted" : "") },
+        { node: el("span", { class: "log-detail", title: det.full, text: det.text }) }
+      ];
+    });
+    card.appendChild(tableEl(["Time", "Bot", "Symbol", "TF", "Side", "Event", "Details"], body, [0, 0, 0, 0, 0, 0, 0]));
+    return card;
   }
 
   function renderSkips(events) {
     var card = el("div", { class: "card" }, [
-      el("h2", { text: "Why setups were skipped" }),
-      el("p", { class: "sub", text: "Most common filter results" })
+      el("h2", { text: "Why setups were skipped or failed" }),
+      el("p", { class: "sub", text: "Most common filter results, broker rejections and errors" })
     ]);
     var counts = {};
     events.forEach(function (e) {
-      if (e.status !== "skipped") return;
-      var key = e.bot + "\u0000" + normalizeReason(e.reason);
+      if (e.status !== "skipped" && e.status !== "rejected" && e.status !== "error") return;
+      var key = e.bot + "\u0000" + e.status + "\u0000" + normalizeReason(e.reason);
       counts[key] = (counts[key] || 0) + e.n;
     });
     var body = Object.keys(counts).sort(function (a, b) { return counts[b] - counts[a]; }).slice(0, 12).map(function (k) {
       var parts = k.split("\u0000");
       return [
         { node: el("span", {}, [el("i", { class: "dot", style: "background:" + botColor(parts[0]) }), document.createTextNode(botName(parts[0]))]) },
-        { text: parts[1] }, { text: counts[k].toLocaleString(), cls: "num" }
+        { text: STATUS_LABELS[parts[1]] || parts[1], cls: parts[1] === "skipped" ? "muted" : "neg" },
+        { node: el("span", { class: "log-detail", text: parts[2] }) }, { text: counts[k].toLocaleString(), cls: "num" }
       ];
     });
-    if (!body.length) { card.appendChild(el("div", { class: "notice", text: "No skipped setups in this range." })); return card; }
-    card.appendChild(tableEl(["Bot", "Reason", "Count"], body, [false, false, true]));
+    if (!body.length) { card.appendChild(el("div", { class: "notice", text: "No skipped or failed setups in this range." })); return card; }
+    card.appendChild(tableEl(["Bot", "Result", "Reason", "Count"], body, [false, false, false, true]));
     return card;
   }
 

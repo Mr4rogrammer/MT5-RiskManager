@@ -590,6 +590,9 @@ detail. It grows by roughly 60 MB a year, almost all of it raw events.
 - how trades closed (TP / SL / break-even / override) per bot
 - signals vs trades taken, and the most common reasons setups were skipped
 - breakdown by bot × timeframe and by symbol, open trades, and the last 100 closed trades
+- **equity & drawdown**: the running net, its high, and how far it fell from it (max / current drawdown in $ and % of balance, longest time below a high, the deepest drawdowns as a table)
+- **why setups failed**: skip reasons plus broker rejections with their retcode and meaning (e.g. `rejected 10027: Algo Trading disabled in the terminal`)
+- **bot log**: the newest `BOT_DB_RECENT_EVENTS` (default 300) events — rejected & errors, skipped, trades, or all — refreshed with the snapshot
 
 **There is no API behind it.** The `dashboard` container (nginx) serves a static page and
 the read-only `dashboard.db` snapshot. The page loads the database into the browser with
