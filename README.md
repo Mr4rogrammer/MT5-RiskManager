@@ -636,7 +636,7 @@ together** (`risk_guard.py`). 0 = off.
 
 | Limit | What happens |
 | ----- | ------------ |
-| **Max daily loss** (account currency) | Counts every bot trade closed today plus the floating P/L of open ones, with commission and swap. When it reaches −limit, **every open bot trade is closed** and no bot opens a new one until the next broker day (broker midnight). |
+| **Max daily loss** (account currency) | Counts every bot trade closed today — by the bot, SL/TP, by hand in MT5 or a stop-out — plus today's floating P/L of open ones (for a trade opened before today, only the move since the day's open), with commission and swap. When it reaches −limit, **every open bot trade is closed** and no bot opens a new one until the next broker day (broker midnight). |
 | **Max open trades** | A new trade is skipped while this many bot trades are open. A higher-TF override that replaces a trade still goes ahead. |
 
 - Checked every 2 seconds (`BOTS_GUARD_INTERVAL`). Manual trades are ignored, both in the

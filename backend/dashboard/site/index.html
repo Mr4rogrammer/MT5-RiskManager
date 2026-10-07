@@ -657,6 +657,10 @@
     });
     var openAll = data.trades.filter(function (t) { return t.status === "open"; }).length;
 
+    // The guard's own figure (closed + floating) when it's recent; else closed trades only
+    var today = metaJson("today");
+    if (today && !(nowSec - today.at < 600 && today.at >= dayStart)) today = null;
+
     var status;
     if (halt && halt.until > nowSec) {
       status = el("p", { class: "status halted", role: "status",
@@ -666,7 +670,9 @@
     } else {
       var lim = applied || {};
       status = el("p", { class: "status", role: "status",
-        text: "Today (closed): " + money(closedToday) +
+        text: (today ? "Today: " + money(today.net) + " (closed " + money(today.closed) +
+                       ", open " + money(today.floating) + ")"
+                     : "Today (closed): " + money(closedToday)) +
               (lim.max_daily_loss ? " of −" + lim.max_daily_loss.toFixed(2) + " limit" : "") +
               " · Open trades: " + openAll + (lim.max_open_trades ? " of " + lim.max_open_trades : "") });
     }
@@ -715,8 +721,8 @@
 
     return el("div", { class: "card limits" }, [
       el("h2", { text: "Account limits" }),
-      el("p", { class: "sub", text: "Apply to all bots together; 0 = off. The daily loss counts trades closed today " +
-        "plus the floating P/L of open ones. When it is reached, every bot trade is closed and no bot opens a " +
+      el("p", { class: "sub", text: "Apply to all bots together; 0 = off. The daily loss counts bot trades closed today " +
+        "(however they closed) plus today's floating P/L of open ones; it updates about every 30 s. When it is reached, every bot trade is closed and no bot opens a " +
         "new one until the next broker day." }),
       status,
       form,

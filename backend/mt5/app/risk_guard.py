@@ -1,7 +1,7 @@
 """
 Account-wide limits shared by every bot (prop-firm style).
 
-  Max daily loss   when today's net result of ALL bot trades — closed today plus the
+  Max daily loss   when today's net result of ALL bot trades — closed today plus today's
                    floating P/L of open ones, with commission and swap — reaches −limit,
                    every open bot trade is closed and no bot opens a new one until the
                    next broker day.
@@ -44,6 +44,8 @@ state  = {"day_open": None, "halted_day": None, "today_net": None}
 _bots = {}                 # bot_common.BOTS, passed in by start()
 _control_dir = None
 _control_mtime = None
+_pos_cache = {}            # position id -> opened by a bot?
+_start_cache = {}          # (ticket, day_open) -> floating P/L at the D1 open
 _started = False
 _start_lock = threading.Lock()
 
@@ -117,22 +119,89 @@ def _day_open():
     return None
 
 
-def _today_net(day_open):
-    """Closed today + floating, for bot trades only, in account currency."""
+def _bot_magics():
     magics = set()
     for bot in list(_bots.values()):
         if bot._started and "magic_base" in bot.settings:
             base = bot.settings["magic_base"]
             magics.update(base + m for m in (15, 30, 60, 240))
+    return magics
+
+
+def _is_bot_position(position_id, magics):
+    """
+    True if the position was opened by a bot. A close done by hand in MT5 or a stop-out
+    carries magic 0, so the opening deal decides — looked up once per position.
+    """
+    if position_id not in _pos_cache:
+        deals = mt5.history_deals_get(position=position_id) or []
+        _pos_cache[position_id] = any(d.magic in magics and d.entry == mt5.DEAL_ENTRY_IN
+                                      for d in deals)
+    return _pos_cache[position_id]
+
+
+def _start_profit(pos, day_open):
+    """Floating P/L of an older position at today's open (the D1 open price), or None."""
+    key = (pos.ticket, day_open)
+    if key not in _start_cache:
+        d1 = mt5.copy_rates_from_pos(pos.symbol, mt5.TIMEFRAME_D1, 0, 1)
+        value = None
+        if d1 is not None and len(d1) and int(d1[0]["time"]) >= day_open:
+            action = mt5.ORDER_TYPE_BUY if pos.type == mt5.POSITION_TYPE_BUY else mt5.ORDER_TYPE_SELL
+            value = mt5.order_calc_profit(action, pos.symbol, pos.volume,
+                                          pos.price_open, float(d1[0]["open"]))
+        if value is None:
+            return None                      # not cached: try again next pass
+        _start_cache[key] = value
+    return _start_cache[key]
+
+
+def _today_net(day_open):
+    """
+    Today's result of bot trades, like a prop firm's daily loss: (closed, floating).
+
+      closed    every deal of a bot position dated today: profit + commission + swap + fee,
+                whoever closed it (bot, SL/TP, by hand in MT5, stop-out)
+      floating  open bot positions — opened today: their full P/L + swap;
+                opened earlier: only the move since today's open (P/L now − P/L at the
+                D1 open price), so yesterday's floating isn't counted again
+    """
+    magics = _bot_magics()
     # Deal times are broker time stored as epoch seconds: query a window around it
     deals = mt5.history_deals_get(datetime.fromtimestamp(day_open - 86400, timezone.utc),
                                   datetime.fromtimestamp(time.time() + 2 * 86400, timezone.utc))
     if deals is None:
         return None
-    closed = sum(d.profit + d.commission + d.swap + getattr(d, "fee", 0.0)
-                 for d in deals if d.time >= day_open and d.magic in magics)
-    floating = sum(p.profit + p.swap for p in (mt5.positions_get() or []) if p.magic in magics)
-    return closed + floating
+    closed = 0.0
+    for d in deals:
+        if d.time < day_open or not d.position_id:      # position 0 = balance / credit
+            continue
+        if d.magic in magics or _is_bot_position(d.position_id, magics):
+            closed += d.profit + d.commission + d.swap + getattr(d, "fee", 0.0)
+
+    floating = 0.0
+    for p in mt5.positions_get() or []:
+        if p.magic not in magics:
+            continue
+        if p.time >= day_open:
+            floating += p.profit + p.swap
+        else:
+            start = _start_profit(p, day_open)
+            floating += p.profit - start if start is not None else p.profit + p.swap
+    return closed, floating
+
+
+def _publish_today(closed, floating, force=False):
+    """Today's figures for the dashboard. Throttled: each write refreshes the snapshot."""
+    net = closed + floating
+    last = state.get("published")
+    step = max(1.0, limits["max_daily_loss"] * 0.02)
+    if not force and last and (time.time() - last[0] < 30 or abs(net - last[1]) < step):
+        return
+    state["published"] = (time.time(), net)
+    trade_db.set_meta("today", json.dumps({
+        "net": round(net, 2), "closed": round(closed, 2), "floating": round(floating, 2),
+        "day_open": state["day_open"], "at": int(time.time())}))
 
 
 # ---------------------------------------------------------------------------
@@ -175,25 +244,31 @@ def check():
     day, symbol = got
     if state["day_open"] != day:
         state["day_open"] = day
+        _pos_cache.clear()
+        _start_cache.clear()
         if state["halted_day"] is not None and state["halted_day"] != day:
             logger.info("risk guard: new broker day — daily loss halt lifted")
             state["halted_day"] = None
             trade_db.set_meta("halted_until", "")
 
+    got = _today_net(day)
+    if got is None:
+        return
+    closed, floating = got
+    net = closed + floating
+    state["today_net"] = net
+
     limit = limits["max_daily_loss"]
     if limit <= 0:
+        _publish_today(closed, floating)
         if halted():
             logger.info("risk guard: daily loss limit switched off — halt lifted")
             state["halted_day"] = None
             trade_db.set_meta("halted_until", "")
         return
 
-    net = _today_net(day)
-    if net is None:
-        return
-    state["today_net"] = net
-
     if not halted() and net <= -limit:
+        _publish_today(closed, floating, force=True)
         state["halted_day"] = day
         tick = mt5.symbol_info_tick(symbol)
         broker_now = tick.time if tick else day
@@ -202,6 +277,8 @@ def check():
                        "trades, no new ones until the next broker day", net, limit)
         trade_db.set_meta("halted_until", json.dumps(
             {"until": until, "at": int(time.time()), "net": round(net, 2), "limit": limit}))
+    else:
+        _publish_today(closed, floating)
 
     if halted():
         _close_all()   # repeats every pass until nothing is left (a failed close is retried)
