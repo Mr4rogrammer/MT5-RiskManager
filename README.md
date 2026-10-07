@@ -636,7 +636,7 @@ detail. It grows by roughly 60 MB a year, almost all of it raw events.
 
 `http://your-server-ip:8080` shows, for any date range, bot, symbol and timeframe:
 
-- net P/L **including open trades' running P/L** (closed + open, live about every 30 s),
+- net P/L **including open trades' running P/L** (closed + open, live every ~5 s),
   win rate (break-even excluded), average R, profit factor, open trades with their running P/L
 - one card per bot: description, running/stopped with a **Start / Stop button**, headline
   stats, settings
@@ -700,8 +700,12 @@ aren't tracked.
 | sql.js from cdnjs | ~370 KB | First visit only, then cached by the browser |
 | Snapshot | ~0.3 MB gzipped after a year | Only when it changed |
 | Check for changes | ~200 bytes (304) | Every minute while the tab is open |
+| Live P/L (`data/live.json`) | ~1 KB | Every 5 s while the tab is open |
 
 Skip and signal counts on the dashboard refresh every 5 minutes; trades within a minute.
+The running P/L (net, open trades, today's result) comes from `config/data/live.json`, which
+the bots' risk guard rewrites every ~2 s; the page polls it every 5 s and updates only those
+numbers, so it stays live without re-downloading the database.
 For ranges over 30 days, event counts are rounded to whole weeks.
 
 Set the login in `.env`. The container refuses to start without it:

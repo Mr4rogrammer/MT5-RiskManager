@@ -20,6 +20,9 @@ JSON. Until the dashboard saves a value, these env vars apply:
   BOTS_RISK_MAX_OVER     (default 1.5)
   BOTS_GUARD_INTERVAL    seconds between daily-loss checks (default 2)
 
+Each check also writes <BOT_DB_DIR>/live.json (today's result and every open bot
+trade's running P/L), which the dashboard polls for its live numbers.
+
 Only trades with a bot's magic number count; manual trades are ignored. The broker day
 starts at the D1 candle open (broker midnight). A halt lasts until the next broker day —
 raising the limit doesn't lift it, setting it to 0 (off) does. After a restart the halt
@@ -43,6 +46,7 @@ from mt5_guard import MT5_LOCK
 logger = logging.getLogger(__name__)
 
 LIMITS_FILE = "_limits"
+LIVE_SECONDS = 1.5         # live.json refresh: every guard pass (~2 s); the page polls every 5 s
 
 limits = {"max_daily_loss": 0.0, "max_open_trades": 0, "risk_pct": 0.5, "risk_max_over": 1.5,
           "source": "env"}
@@ -237,26 +241,31 @@ def _today_net(day_open):
     return closed, floating
 
 
-def _publish_today(closed, floating, force=False):
+def _publish_live(closed, floating):
     """
-    Today's figures and each open trade's running P/L, for the dashboard. Throttled
-    (at most every 30 s, and only on a move of ≥ 1 or 2 % of the limit), because each
-    write refreshes the snapshot the page downloads.
+    Write <BOT_DB_DIR>/live.json — today's figures and each open trade's running P/L —
+    for the dashboard, which polls it every few seconds (nginx serves it as a plain
+    file). Kept out of the SQLite snapshot so live prices don't rewrite the snapshot.
+    Written atomically (temp file + rename) at most every LIVE_SECONDS.
     """
-    net = closed + floating
-    live = _open_pnl(_bot_magics())
-    total = sum(live.values())
-    last = state.get("published")
-    step = max(1.0, limits["max_daily_loss"] * 0.02)
-    if not force and last and (time.time() - last[0] < 30 or
-                               (abs(net - last[1]) < step and abs(total - last[2]) < step
-                                and set(live) == last[3])):
+    now = time.time()
+    if now - state.get("live_at", 0) < LIVE_SECONDS:
         return
-    state["published"] = (time.time(), net, total, set(live))
-    trade_db.set_meta("today", json.dumps({
-        "net": round(net, 2), "closed": round(closed, 2), "floating": round(floating, 2),
-        "open_total": round(total, 2), "open": {str(k): v for k, v in live.items()},
-        "day_open": state["day_open"], "at": int(time.time())}))
+    state["live_at"] = now
+    live = _open_pnl(_bot_magics())
+    payload = {
+        "net": round(closed + floating, 2), "closed": round(closed, 2),
+        "floating": round(floating, 2), "open_total": round(sum(live.values()), 2),
+        "open": {str(k): v for k, v in live.items()},
+        "day_open": state["day_open"], "at": int(now),
+    }
+    path = f"{trade_db.DB_DIR}/live.json"     # "/" not os.path.join: Python runs under Wine
+    try:
+        with open(path + ".tmp", "w", encoding="utf-8") as f:
+            json.dump(payload, f, separators=(",", ":"))
+        os.replace(path + ".tmp", path)
+    except OSError as exc:
+        logger.warning("risk guard: could not write %s (%s)", path, exc)
 
 
 # ---------------------------------------------------------------------------
@@ -315,7 +324,7 @@ def check():
 
     limit = limits["max_daily_loss"]
     if limit <= 0:
-        _publish_today(closed, floating)
+        _publish_live(closed, floating)
         if halted():
             logger.info("risk guard: daily loss limit switched off — halt lifted")
             state["halted_day"] = None
@@ -323,7 +332,7 @@ def check():
         return
 
     if not halted() and net <= -limit:
-        _publish_today(closed, floating, force=True)
+        _publish_live(closed, floating)
         state["halted_day"] = day
         tick = mt5.symbol_info_tick(symbol)
         broker_now = tick.time if tick else day
@@ -333,7 +342,7 @@ def check():
         trade_db.set_meta("halted_until", json.dumps(
             {"until": until, "at": int(time.time()), "net": round(net, 2), "limit": limit}))
     else:
-        _publish_today(closed, floating)
+        _publish_live(closed, floating)
 
     if halted():
         _close_all()   # repeats every pass until nothing is left (a failed close is retried)

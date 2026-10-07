@@ -236,6 +236,8 @@
   // ------------------------------------------------------------------
   var DB_URL = "data/dashboard.db";
   var REFRESH_MS = 60000;
+  var LIVE_URL = "data/live.json";   // running P/L, rewritten by the bots every ~2 s
+  var LIVE_MS = 5000;
   var CONTROL_URL = "control/";      // PUT "run" / "stop" → config/control/<bot> (see nginx.conf)
   var PENDING_MS = 3 * 60 * 1000;    // stop waiting for a bot to confirm after this long
   // Bots come from the database's `bots` table, so a new strategy appears here
@@ -259,6 +261,8 @@
   var limitDraft = {};         // what the user typed, kept across re-renders
   var pendingReset = null;     // { id, at } until the snapshot shows meta.reset_id === id
   var pendingTimer = null;
+  var live = null;             // last data/live.json
+  var lastTop = null;          // { s, open } of the last render, for live patches
   var filters = { days: 30, bot: "", symbol: "", tf: "" };
   var content = document.getElementById("content");
   var tooltip = document.getElementById("tooltip");
@@ -555,50 +559,91 @@
   }
   var afterMount = [];
 
-  function tile(label, value, note, cls) {
+  function tile(label, value, note, cls, noteId) {
     return el("div", { class: "card tile" }, [
       el("div", { class: "label", text: label }),
       el("div", { class: "value " + (cls || ""), text: value }),
-      note ? el("div", { class: "note", text: note }) : null
+      note ? el("div", noteId ? { id: noteId, class: "note", text: note } : { class: "note", text: note }) : null
     ]);
   }
 
-  // Running P/L of open trades (booked part + floating), published by the bots'
-  // risk guard about every 30 s. null when it hasn't reported for 10 minutes.
+  // Running P/L of open trades (booked part + floating) from data/live.json, which the
+  // bots' risk guard rewrites every ~2 s. null when it hasn't updated for 2 minutes.
   function liveOpen() {
-    var today = data && data.meta.today ? metaJson("today") : null;
-    if (!today || !today.open || Date.now() / 1000 - today.at > 600) return null;
-    return today;
+    if (!live || !live.open || Date.now() / 1000 - live.at > 120) return null;
+    return live;
+  }
+
+  function pollLive() {
+    fetch(LIVE_URL, { cache: "no-store" })
+      .then(function (res) { return res.ok ? res.json() : null; })
+      .then(function (j) { live = j; patchLive(); })
+      .catch(function () { /* keep the last values; the "as of" time shows they're old */ });
+  }
+
+  // Update only the live numbers in place, so open panels and typing aren't disturbed
+  function patchLive() {
+    if (!data || !lastTop) return;
+    var t = topLive(lastTop.s, lastTop.open);
+    var v = document.getElementById("hero-net");
+    if (v) { v.textContent = money(t.total); v.className = "value " + signClass(t.total); }
+    var n = document.getElementById("hero-note");
+    if (n) n.textContent = t.note;
+    var o = document.getElementById("open-note");
+    if (o) o.textContent = t.tileNote;
+    var cur = liveOpen();
+    document.querySelectorAll("td.running").forEach(function (td) {
+      var x = runningPnl({ ticket: td.getAttribute("data-ticket") }, cur);
+      td.textContent = x === null ? "—" : money(x);
+      td.className = "num running " + (x === null ? "" : signClass(x));
+    });
+    var sub = document.getElementById("open-sub");
+    if (sub) sub.textContent = openSubText();
+    var st = document.getElementById("limits-status");
+    if (st) st.replaceWith(limitsStatus());
+  }
+
+  function topLive(s, open) {
+    var rangeText = filters.days ? "Last " + filters.days + " days" : "All time";
+    var cur = liveOpen(), openPnl = 0, priced = 0;
+    open.forEach(function (t) {
+      var v = runningPnl(t, cur);
+      if (v !== null) { openPnl += v; priced++; }
+    });
+    return {
+      total: s.net + openPnl,
+      note: cur
+        ? rangeText + " · closed " + money(s.net) + " + open " + money(openPnl) +
+          (priced < open.length ? " (" + (open.length - priced) + " open not priced yet)" : "") +
+          " · live " + new Date(cur.at * 1000).toLocaleTimeString()
+        : rangeText + " · closed trades only (live P/L not available) · after commission and swap",
+      tileNote: open.length ? (cur ? "Running " + money(openPnl) : "Shown below") : "None open"
+    };
+  }
+
+  function openSubText() {
+    var cur = liveOpen();
+    return "Running P/L = floating + anything already booked (commission, partial close)" +
+      (cur ? ", live " + new Date(cur.at * 1000).toLocaleTimeString() : " — live P/L not available");
   }
   function runningPnl(t, live) {
     return live && live.open[String(t.ticket)] !== undefined ? live.open[String(t.ticket)] : null;
   }
 
   function renderTop(s, open) {
-    var rangeText = filters.days ? "Last " + filters.days + " days" : "All time";
-    var live = liveOpen(), openPnl = 0, priced = 0;
-    open.forEach(function (t) {
-      var v = runningPnl(t, live);
-      if (v !== null) { openPnl += v; priced++; }
-    });
-    var total = s.net + openPnl;
-    var note = live
-      ? rangeText + " · closed " + money(s.net) + " + open " + money(openPnl) +
-        (priced < open.length ? " (" + (open.length - priced) + " open not priced yet)" : "") +
-        " · live as of " + new Date(live.at * 1000).toLocaleTimeString()
-      : rangeText + " · closed trades only (open P/L not reported) · after commission and swap";
+    lastTop = { s: s, open: open };
+    var t = topLive(s, open);
     var hero = el("div", { class: "card hero" }, [
       el("div", { class: "label", text: "Net profit / loss" }),
-      el("div", { class: "value " + signClass(total), text: money(total) }),
-      el("div", { class: "note", text: note })
+      el("div", { id: "hero-net", class: "value " + signClass(t.total), text: money(t.total) }),
+      el("div", { id: "hero-note", class: "note", text: t.note })
     ]);
     var tiles = el("div", { class: "tiles" }, [
       tile("Closed trades", s.n.toLocaleString(), s.win + " W · " + s.loss + " L · " + s.be + " BE"),
       tile("Win rate", pct(s.winRate), "Wins ÷ (wins + losses), break-even excluded"),
       tile("Average R", rMult(s.avgR), "Net result ÷ money at risk", signClass(s.avgR)),
       tile("Profit factor", pf(s.pf), "Gross wins ÷ gross losses (BE excluded)"),
-      tile("Open trades", String(open.length),
-        open.length ? (live ? "Running " + money(openPnl) : "Shown below") : "None open")
+      tile("Open trades", String(open.length), t.tileNote, "", "open-note")
     ]);
     return el("div", { class: "top" }, [hero, tiles]);
   }
@@ -674,6 +719,37 @@
 
   var LIMIT_KEYS = ["max_daily_loss", "max_open_trades", "risk_pct", "risk_max_over"];
 
+  // "Today: …" line of the limits card — rebuilt on every live update
+  function limitsStatus() {
+    var applied = metaJson("limits") || {};
+    var halt = metaJson("halted_until");
+    var nowSec = Date.now() / 1000;
+    if (halt && halt.until > nowSec) {
+      return el("p", { id: "limits-status", class: "status halted", role: "status",
+        text: "⛔ Daily loss limit hit at " + new Date(halt.at * 1000).toLocaleTimeString() +
+              " (" + money(halt.net) + " of −" + halt.limit.toFixed(2) + "). All bot trades closed; " +
+              "trading resumes " + new Date(halt.until * 1000).toLocaleString() + "." });
+    }
+    // Today = the current broker day (broker midnight)
+    var off = data.offset || 0;
+    var dayStart = Math.floor((nowSec + off) / 86400) * 86400 - off;
+    var closedToday = 0;
+    data.trades.forEach(function (t) {
+      if (t.status === "closed" && (t.closed_utc || 0) >= dayStart) closedToday += t.net || 0;
+    });
+    var openAll = data.trades.filter(function (t) { return t.status === "open"; }).length;
+    // The guard's own figure (closed + floating) when live; else closed trades only
+    var today = liveOpen();
+    if (today && today.at < dayStart) today = null;
+    if (today) openAll = Object.keys(today.open).length;
+    return el("p", { id: "limits-status", class: "status", role: "status",
+      text: (today ? "Today: " + money(today.net) + " (closed " + money(today.closed) +
+                     ", open " + money(today.floating) + ")"
+                   : "Today (closed): " + money(closedToday)) +
+            (applied.max_daily_loss ? " of −" + applied.max_daily_loss.toFixed(2) + " limit" : "") +
+            " · Open trades: " + openAll + (applied.max_open_trades ? " of " + applied.max_open_trades : "") });
+  }
+
   function renderLimits() {
     var applied = metaJson("limits");
     var halt = metaJson("halted_until");
@@ -682,34 +758,7 @@
       pendingLimits = null;
     if (pendingLimits && Date.now() - pendingLimits.at > PENDING_MS) pendingLimits = null;
 
-    // Today = the current broker day (broker midnight), shown in real time
-    var off = data.offset || 0;
-    var dayStart = Math.floor((nowSec + off) / 86400) * 86400 - off;
-    var closedToday = 0;
-    data.trades.forEach(function (t) {
-      if (t.status === "closed" && (t.closed_utc || 0) >= dayStart) closedToday += t.net || 0;
-    });
-    var openAll = data.trades.filter(function (t) { return t.status === "open"; }).length;
-
-    // The guard's own figure (closed + floating) when it's recent; else closed trades only
-    var today = metaJson("today");
-    if (today && !(nowSec - today.at < 600 && today.at >= dayStart)) today = null;
-
-    var status;
-    if (halt && halt.until > nowSec) {
-      status = el("p", { class: "status halted", role: "status",
-        text: "⛔ Daily loss limit hit at " + new Date(halt.at * 1000).toLocaleTimeString() +
-              " (" + money(halt.net) + " of −" + halt.limit.toFixed(2) + "). All bot trades closed; " +
-              "trading resumes " + new Date(halt.until * 1000).toLocaleString() + "." });
-    } else {
-      var lim = applied || {};
-      status = el("p", { class: "status", role: "status",
-        text: (today ? "Today: " + money(today.net) + " (closed " + money(today.closed) +
-                       ", open " + money(today.floating) + ")"
-                     : "Today (closed): " + money(closedToday)) +
-              (lim.max_daily_loss ? " of −" + lim.max_daily_loss.toFixed(2) + " limit" : "") +
-              " · Open trades: " + openAll + (lim.max_open_trades ? " of " + lim.max_open_trades : "") });
-    }
+    var status = limitsStatus();
 
     function field(id, key, labelText, step) {
       var val = limitDraft[key] !== undefined ? limitDraft[key]
@@ -1280,16 +1329,15 @@
     } else {
       cells.push({ text: t.be_sl ? "Yes" : "No" });
       var v = runningPnl(t, liveOpen());
-      cells.push({ text: v === null ? "—" : money(v), cls: "num " + (v === null ? "" : signClass(v)) });
+      cells.push({ text: v === null ? "—" : money(v), cls: "num running " + (v === null ? "" : signClass(v)),
+                   ticket: t.ticket });
     }
     return cells;
   }
 
   function renderOpen(open) {
-    var live = liveOpen();
     var card = el("div", { class: "card" }, [el("h2", { text: "Open trades" }),
-      el("p", { class: "sub", text: "Running P/L = floating + anything already booked (commission, partial close)" +
-        (live ? ", as of " + new Date(live.at * 1000).toLocaleTimeString() : " — not reported by the bots yet") })]);
+      el("p", { id: "open-sub", class: "sub", text: openSubText() })]);
     if (!open.length) { card.appendChild(el("div", { class: "notice", text: "No open trades." })); return card; }
     var head = ["Opened", "Bot", "Symbol", "TF", "Side", "Entry", "Initial SL", "TP", "At break-even", "Running P/L"];
     card.appendChild(tableEl(head, open.sort(function (a, b) { return b.opened_utc - a.opened_utc; })
@@ -1316,7 +1364,8 @@
     }))]);
     var tbody = el("tbody", {}, body.map(function (row) {
       return el("tr", {}, row.map(function (c) {
-        var td = el("td", { class: c.cls || "" });
+        var td = el("td", c.ticket !== undefined ? { class: c.cls || "", "data-ticket": String(c.ticket) }
+                                                 : { class: c.cls || "" });
         if (c.node) td.appendChild(c.node); else td.textContent = c.text;
         return td;
       }));
@@ -1381,6 +1430,8 @@
 
   load();
   setInterval(load, REFRESH_MS);
+  pollLive();
+  setInterval(pollLive, LIVE_MS);
 })();
 </script>
 </body>
