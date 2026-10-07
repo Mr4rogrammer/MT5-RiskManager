@@ -93,6 +93,10 @@ def _load_settings():
 
 TF_MINUTES = {15: "M15", 30: "M30", 60: "H1", 240: "H4"}
 
+# Bots whose code was deleted: their trades, events and dashboard entry are removed on start
+REMOVED_BOTS = ("dsweep", "ema2050", "ema921", "golden", "rsi", "bbands", "supertrend",
+                "stoch", "ichimoku", "supertrend_pt")
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS trades (
     ticket          INTEGER PRIMARY KEY,  -- MT5 position ticket
@@ -210,12 +214,27 @@ def init():
             _conn.execute("PRAGMA synchronous=NORMAL")
             _conn.executescript(SCHEMA)
             _conn.commit()
+            _purge_removed_bots()
             _rebuild_event_counts_if_empty()
             logger.info("trade_db: using %s (snapshot %s)", DB_PATH, SNAPSHOT_PATH)
 
         if not _sync_started:
             _sync_started = True
             threading.Thread(target=_sync_loop, daemon=True, name="trade-db-sync").start()
+
+
+def _purge_removed_bots():
+    """Delete everything recorded for bots whose code was removed, so the dashboard drops them."""
+    marks = ",".join("?" * len(REMOVED_BOTS))
+    found = _conn.execute(f"SELECT COUNT(*) FROM bots WHERE name IN ({marks})",
+                          REMOVED_BOTS).fetchone()[0]
+    if not found:
+        return
+    for table in ("trades", "events", "event_counts", "bots"):
+        col = "name" if table == "bots" else "bot"
+        _conn.execute(f"DELETE FROM {table} WHERE {col} IN ({marks})", REMOVED_BOTS)
+    _conn.commit()
+    logger.warning("trade_db: removed the data of %d deleted bot(s)", found)
 
 
 def register_bot(name, magic_base, label=None, description=None, state_fn=None):

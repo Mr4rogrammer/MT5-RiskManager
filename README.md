@@ -408,52 +408,7 @@ find C1 again after a restart. Commission settings (`CRT_COMMISSION_*`) are shar
 | `CRT2_PARTIAL_PCT` | `50` | % of the position closed when break-even triggers (0 = off) |
 | `CRT2_TRAIL_R` | `0` | After break-even, trail the SL this × the initial risk (0 = off) |
 
-## Daily Sweep Bot
-
-A third bot (`app/daily_sweep_bot.py`): CRT on the **daily** candle, the classic
-"turtle soup" failed breakout.
-
-- **C1** = yesterday's broker-day candle, **C2** = today.
-- **SELL** when today has gone above yesterday's high and an M30 candle closes back below it,
-  **only if the daily trend is up** (yesterday's close above the 20-day average): a failed new
-  high at the end of a run, where breakout buyers are trapped.
-- **BUY** is the mirror: below yesterday's low, close back above it, daily trend down.
-- **SL** beyond today's extreme so far (+ spread for SELL). **TP** = the other side of
-  yesterday's range. No break-even by default, since targets are about 5× the risk.
-- One trade per symbol per day. If today sweeps both sides, no trade.
-
-**Why daily:** stops are 15–40 pips instead of 3–6, so spread and commission are a small part
-of each trade. They are what sinks the M15/M30 CRT setups.
-
-**What the backtest showed** (6 FX pairs, FXCM 1-minute bid/ask, Jan 2023 → Sep 2026,
-same costs and rules as live; gold not tested):
-
-| | Avg per trade | Win rate | Max drawdown |
-| - | - | - | - |
-| 3-candle CRT (live rules) | −0.25R | 37% | — |
-| Daily sweep, 2023–24 | +0.005R | 17% | ~148R |
-| Daily sweep, 2025–26 (not used for design) | +0.007R | 17% | ~141R |
-
-That's roughly break-even: far better than the M15–H4 CRT bots, but not a proven edge, and
-with long losing streaks. Trading **against** the trend beat no filter, which beat trading
-**with** it, in both periods. EURUSD and GBPUSD were positive in both. Run it at small size
-and let the dashboard judge it.
-
-| Variable | Default | Description |
-| -------- | ------- | ----------- |
-| `DSW_ENABLED` | `false` | Start trading on boot |
-| `DSW_SYMBOLS` | same as `CRT_SYMBOLS` | Symbols to trade |
-| `DSW_LOT` | `0.01` | Fixed lot (only when `BOTS_RISK_PCT=0`) |
-| `DSW_MAGIC_BASE` | `790000` | Trades use 790030 |
-| `DSW_TREND` | `against` | `against` / `with` / `off` |
-| `DSW_SMA_DAYS` | `20` | Daily trend average length |
-| `DSW_TP_FRAC` | `1.0` | TP as a fraction of the way to the other side of yesterday's range |
-| `DSW_MIN_SL_SPREADS` | `3` | Minimum SL distance in spreads |
-| `DSW_SL_BUFFER_SPREADS` | `0` | Extra SL room beyond today's extreme |
-| `DSW_BE_TRIGGER` | `0` | Break-even trigger as a fraction of entry→TP (`0` = off) |
-| `DSW_POLL_INTERVAL` / `DSW_MAX_SIGNAL_AGE` / `DSW_MIN_RR` / `DSW_DEVIATION` | `5` / `300` / `0` / `20` | As for the other bots |
-
-### Controlling any bot
+## Controlling any bot
 
 Generic routes work for every bot, including future ones:
 
@@ -464,7 +419,7 @@ Generic routes work for every bot, including future ones:
 | POST | `/bots/<name>/start` | Start new entries |
 | POST | `/bots/<name>/stop` | Stop new entries (open trades keep SL/TP, break-even still runs) |
 
-Bot names: `crt3`, `crt2`, `dsweep`. The older `/bot/*` and `/bot2/*` routes still work.
+Bot names: `crt3`, `crt2`, `macd`, `donchian`, `donchian_pt`. The older `/bot/*` and `/bot2/*` routes still work.
 The easier way is the **Start / Stop** button on each bot's card in the dashboard (see below).
 
 ## Backtesting
@@ -478,9 +433,9 @@ cd tools/backtest && python3 -m venv venv && venv/bin/pip install -r requirement
 ./fetch_fxcm.sh && venv/bin/python backtest.py
 ```
 
-## Indicator Bots (10 popular strategies + 2 exit variants)
+## Indicator Bots
 
-`app/indicator_bots.py` runs ten widely shared indicator strategies, **each as its own bot**,
+`app/indicator_bots.py` runs indicator strategies, **each as its own bot**,
 for side-by-side testing on a demo account. They all use the same rules so the comparison is
 fair:
 
@@ -488,31 +443,22 @@ fair:
   first, one trade per symbol, and an opposite higher-timeframe signal closes the trade and
   enters. The dashboard's *bot × timeframe* table shows which timeframe works.
 - **Signals:** read on each closed candle, entered within 5 minutes of the close.
-- **Risk:** SL = 1.5 × ATR(14); TP = 2 × the SL distance (Bollinger targets the middle band).
+- **Risk:** SL = 1.5 × ATR(14); TP = 2 × the SL distance.
   No break-even, unless set with `IND_<KEY>_BE_R`.
 
 | Bot | Rule |
 | --- | ---- |
-| `ema2050` EMA 20/50 cross | EMA 20 crosses EMA 50 |
-| `ema921` EMA 9/21 + 200 trend | EMA 9 crosses EMA 21, only in the direction of EMA 200 |
-| `golden` Golden / death cross | SMA 50 crosses SMA 200 |
 | `macd` MACD + 200 EMA | MACD crosses its signal below zero (buy) / above zero (sell), with the EMA 200 trend |
-| `rsi` RSI 30/70 reversal | RSI(14) crosses back above 30 / below 70 |
-| `bbands` Bollinger reversion | Close back inside Bollinger(20, 2) after closing outside → middle band |
-| `supertrend` Supertrend flip | Supertrend(10, 3) changes direction |
 | `donchian` Donchian breakout | Close above the previous 20-candle high / below the low |
-| `stoch` Stochastic + 200 EMA | %K crosses %D below 20 / above 80, with the EMA 200 trend |
-| `ichimoku` Ichimoku TK cross | Tenkan crosses Kijun with price on the right side of the cloud |
 | `donchian_pt` Donchian + trail | Same signal as `donchian`; at 1R close 50% and move SL to break-even, then trail the rest 2R behind price, TP at 10R |
-| `supertrend_pt` Supertrend + trail | Same signal as `supertrend`, managed the same way |
 
-The two `_pt` bots race the originals on the same signals, so the dashboard shows whether
-letting winners run beats the fixed 1:2 target. With `IND_ALL_ENABLED=true` they start
-trading on their first boot; stop them on the dashboard if you don't want them.
+`donchian_pt` races `donchian` on the same signals, so the dashboard shows whether letting
+winners run beats the fixed 1:2 target. With `IND_ALL_ENABLED=true` it starts trading on its
+first boot; stop it on the dashboard if you don't want it.
 
 Turn them all on with `IND_ALL_ENABLED=true`, or one at a time with `IND_<KEY>_ENABLED=true`
 (e.g. `IND_MACD_ENABLED`). Per-bot settings: `IND_<KEY>_SYMBOLS`, `_TFS`, `_LOT`, `_SL_ATR`,
-`_RR`, `_MAGIC_BASE` (default 801000, 802000, … 812000), `_MAX_SIGNAL_AGE`, `_MIN_SL_SPREADS`,
+`_RR`, `_MAGIC_BASE` (default `macd` 804000, `donchian` 808000, `donchian_pt` 811000), `_MAX_SIGNAL_AGE`, `_MIN_SL_SPREADS`,
 `_POLL_INTERVAL`, and the exit options `_BE_R` (break-even at this many R in profit),
 `_PARTIAL_PCT` (% closed at that moment) and `_TRAIL_R` (trailing distance in R), e.g.
 `IND_DONCHIAN_TRAIL_R=2`. Start and stop each one with `/bots/<key>/start|stop`.
@@ -522,7 +468,7 @@ Judge them on average R over 100+ trades, not on win rate or the first few weeks
 
 ### Exits: partial close and trailing stop
 
-Every bot can use these, set per bot (`CRT_*`, `CRT2_*`, `DSW_*`, `IND_<KEY>_*`):
+Every bot can use these, set per bot (`CRT_*`, `CRT2_*`, `IND_<KEY>_*`):
 
 | Setting | What happens |
 | ------- | ------------ |
@@ -581,8 +527,7 @@ All bot logic lives in `backend/mt5/app/`:
 | `trade_db.py` | SQLite trade journal (see below) |
 | `crt_bot.py` | 3-candle CRT strategy only: the signal, SL/TP, break-even trigger |
 | `candle_two_bot.py` | 2-candle CRT strategy only |
-| `daily_sweep_bot.py` | Daily sweep strategy only |
-| `indicator_bots.py` | The 10 indicator strategies |
+| `indicator_bots.py` | The indicator strategies (MACD, Donchian, Donchian + trail) |
 | `mt5_guard.py` | The lock that serializes MT5 calls across bot threads |
 | `risk_guard.py` | Account-wide limits for all bots: max daily loss (closes everything and pauses until the next day) and max open trades |
 
@@ -598,7 +543,7 @@ start/stop/status.
      or `None`.
 2. Create the bot with a **unique** name, comment prefix and magic base, for example:
    `Bot(name="fvg1", label="FVG", prefix="FVG ", title="FVG retest", description="...")`
-   with `magic_base` 790000 in its settings.
+   with `magic_base` 820000 in its settings (770000, 780000, 804000, 808000 and 811000 are taken).
 3. Call its start function from `app.py`.
 
 It is journaled automatically and appears on the dashboard with its own color, stats and
