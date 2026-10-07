@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Bot Performance</title>
+<style>
+  :root {
+    color-scheme: light;
+    --page:           #f9f9f7;
+    --surface-1:      #fcfcfb;
+    --text-primary:   #0b0b0b;
+    --text-secondary: #52514e;
+    --text-muted:     #898781;
+    --border:         rgba(11,11,11,0.10);
+    --border-strong:  rgba(11,11,11,0.22);
+    --wash:           rgba(11,11,11,0.04);
+    --accent:         #2a78d6;
+    --accent-text:    #ffffff;
+    --bad-text:       #b42626;
+    --bad-wash:       rgba(180,38,38,0.08);
+    --shadow:         0 1px 2px rgba(11,11,11,0.04), 0 8px 24px rgba(11,11,11,0.06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --page:           #0d0d0d;
+      --surface-1:      #1a1a19;
+      --text-primary:   #ffffff;
+      --text-secondary: #c3c2b7;
+      --text-muted:     #898781;
+      --border:         rgba(255,255,255,0.10);
+      --border-strong:  rgba(255,255,255,0.24);
+      --wash:           rgba(255,255,255,0.05);
+      --accent:         #3987e5;
+      --accent-text:    #ffffff;
+      --bad-text:       #e66767;
+      --bad-wash:       rgba(230,103,103,0.10);
+      --shadow:         0 1px 2px rgba(0,0,0,0.4), 0 8px 24px rgba(0,0,0,0.35);
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --page:           #0d0d0d;
+    --surface-1:      #1a1a19;
+    --text-primary:   #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted:     #898781;
+    --border:         rgba(255,255,255,0.10);
+    --border-strong:  rgba(255,255,255,0.24);
+    --wash:           rgba(255,255,255,0.05);
+    --accent:         #3987e5;
+    --accent-text:    #ffffff;
+    --bad-text:       #e66767;
+    --bad-wash:       rgba(230,103,103,0.10);
+    --shadow:         0 1px 2px rgba(0,0,0,0.4), 0 8px 24px rgba(0,0,0,0.35);
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--page);
+    color: var(--text-primary);
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+    display: flex; align-items: center; justify-content: center;
+    padding: 24px 16px;
+  }
+  main { width: 100%; max-width: 360px; }
+
+  .brand { display: flex; align-items: center; gap: 10px; margin-bottom: 20px; justify-content: center; }
+  .brand svg { width: 28px; height: 28px; flex: none; }
+  .brand h1 { font-size: 18px; font-weight: 600; margin: 0; }
+
+  .card {
+    background: var(--surface-1); border: 1px solid var(--border); border-radius: 12px;
+    padding: 24px; box-shadow: var(--shadow);
+  }
+  .card h2 { font-size: 16px; font-weight: 600; margin: 0 0 4px; }
+  .card .sub { color: var(--text-secondary); font-size: 13px; margin: 0 0 20px; }
+
+  label { display: block; font-size: 13px; color: var(--text-secondary); margin-bottom: 6px; }
+  .field { margin-bottom: 14px; }
+  .input-wrap { position: relative; }
+  input[type="text"], input[type="password"] {
+    width: 100%; font: inherit; color: var(--text-primary); background: var(--page);
+    border: 1px solid var(--border-strong); border-radius: 8px; padding: 9px 12px;
+  }
+  input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-color: transparent; }
+  #password { padding-right: 64px; }
+  .reveal {
+    position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+    font: inherit; font-size: 12px; color: var(--text-secondary); background: none;
+    border: 0; border-radius: 6px; padding: 4px 8px; cursor: pointer;
+  }
+  .reveal:hover { background: var(--wash); }
+  .reveal:focus-visible, .remember input:focus-visible, button:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 2px;
+  }
+
+  .remember { display: flex; align-items: center; gap: 8px; margin: 4px 0 18px;
+              color: var(--text-secondary); font-size: 13px; cursor: pointer; }
+  .remember input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); }
+
+  .submit {
+    width: 100%; font: inherit; font-weight: 600; color: var(--accent-text); background: var(--accent);
+    border: 0; border-radius: 8px; padding: 10px 12px; cursor: pointer;
+  }
+  .submit:hover { filter: brightness(1.06); }
+  .submit:disabled { opacity: 0.65; cursor: default; filter: none; }
+
+  .error {
+    display: none; margin: 0 0 14px; padding: 9px 12px; border-radius: 8px;
+    background: var(--bad-wash); color: var(--bad-text); font-size: 13px;
+  }
+  .error.show { display: block; }
+
+  .foot { text-align: center; color: var(--text-muted); font-size: 12px; margin-top: 16px; }
+</style>
+</head>
+<body>
+<main>
+  <div class="brand">
+    <svg viewBox="0 0 28 28" aria-hidden="true">
+      <rect x="1" y="1" width="26" height="26" rx="7" fill="var(--accent)"/>
+      <polyline points="6,18 11,13 15,16 22,8" fill="none" stroke="#fff" stroke-width="2.4"
+                stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+    <h1>Bot performance</h1>
+  </div>
+
+  <div class="card">
+    <h2>Sign in</h2>
+    <p class="sub">Use the dashboard login from your server's .env.</p>
+
+    <form id="form" novalidate>
+      <p id="error" class="error" role="alert"></p>
+
+      <div class="field">
+        <label for="user">Username</label>
+        <input id="user" name="user" type="text" autocomplete="username" autocapitalize="off"
+               spellcheck="false" required autofocus>
+      </div>
+
+      <div class="field">
+        <label for="password">Password</label>
+        <div class="input-wrap">
+          <input id="password" name="password" type="password" autocomplete="current-password" required>
+          <button type="button" class="reveal" id="reveal" aria-controls="password"
+                  aria-pressed="false">Show</button>
+        </div>
+      </div>
+
+      <label class="remember">
+        <input id="remember" type="checkbox" checked>
+        Keep me signed in for 30 days
+      </label>
+
+      <button class="submit" id="submit" type="submit">Sign in</button>
+    </form>
+  </div>
+
+  <p class="foot">Private dashboard</p>
+</main>
+
+<script>
+(function () {
+  // Same theme choice as the dashboard (its Theme button stores it)
+  try {
+    var t = localStorage.getItem("dash-theme");
+    if (t === "light" || t === "dark") document.documentElement.setAttribute("data-theme", t);
+  } catch (e) {}
+
+  var form = document.getElementById("form");
+  var err = document.getElementById("error");
+  var submit = document.getElementById("submit");
+  var pass = document.getElementById("password");
+  var reveal = document.getElementById("reveal");
+
+  reveal.addEventListener("click", function () {
+    var show = pass.type === "password";
+    pass.type = show ? "text" : "password";
+    reveal.textContent = show ? "Hide" : "Show";
+    reveal.setAttribute("aria-pressed", show ? "true" : "false");
+    pass.focus();
+  });
+
+  function fail(text) {
+    err.textContent = text;
+    err.classList.add("show");
+    submit.disabled = false;
+    submit.textContent = "Sign in";
+  }
+
+  form.addEventListener("submit", function (e) {
+    e.preventDefault();
+    var user = document.getElementById("user").value.trim();
+    if (!user || !pass.value) { fail("Enter your username and password."); return; }
+    err.classList.remove("show");
+    submit.disabled = true;
+    submit.textContent = "Signing in…";
+    fetch("/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user: user, password: pass.value,
+                             remember: document.getElementById("remember").checked }),
+      credentials: "same-origin",
+      cache: "no-store"
+    }).then(function (res) {
+      if (res.status === 429) throw { text: "Too many attempts. Wait a minute and try again." };
+      if (!res.ok) throw { text: "Sign-in failed (HTTP " + res.status + "). Try again." };
+      return res.json();
+    }).then(function (j) {
+      if (!j.ok) {
+        pass.value = "";
+        pass.focus();
+        fail("Wrong username or password.");
+        return;
+      }
+      submit.textContent = "Opening dashboard…";
+      // This page is also shown in place of any page that needed a login: reload that page
+      location.replace(location.pathname === "/login.html" ? "/" : location.href);
+    }).catch(function (x) {
+      fail(x && x.text ? x.text : "Can't reach the server. Check your connection and try again.");
+    });
+  });
+})();
+</script>
+</body>
+</html>

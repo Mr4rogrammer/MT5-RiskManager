@@ -203,6 +203,7 @@
     <div class="actions">
       <button id="refresh" type="button">Refresh</button>
       <button id="theme" type="button" aria-label="Toggle theme">Theme: auto</button>
+      <button id="logout" type="button">Log out</button>
     </div>
   </header>
 
@@ -347,6 +348,7 @@
       // tiny 304 and is served from its cache
       return fetch(DB_URL, { cache: "no-cache" });
     }).then(function (res) {
+      if (res.status === 401) { location.reload(); return null; }   // session expired → login page
       if (res.status === 404) throw { notice: true };
       if (!res.ok) throw new Error("HTTP " + res.status + " loading the database");
       lastChecked = new Date();
@@ -576,8 +578,11 @@
 
   function pollLive() {
     fetch(LIVE_URL, { cache: "no-store" })
-      .then(function (res) { return res.ok ? res.json() : null; })
-      .then(function (j) { live = j; patchLive(); })
+      .then(function (res) {
+        if (res.status === 401) { location.reload(); return null; }
+        return res.ok ? res.json() : null;
+      })
+      .then(function (j) { if (j) { live = j; patchLive(); } })
       .catch(function () { /* keep the last values; the "as of" time shows they're old */ });
   }
 
@@ -687,6 +692,7 @@
       btn.textContent = "Sending…";
       fetch(CONTROL_URL + encodeURIComponent(b), { method: "PUT", body: want, cache: "no-store" })
         .then(function (res) {
+          if (res.status === 401) { location.reload(); return; }
           if (!res.ok) throw new Error("HTTP " + res.status);
           pending[b] = { want: want, at: Date.now() };
           watchPending();
@@ -797,6 +803,7 @@
       save.textContent = "Saving…";
       fetch(CONTROL_URL + "_limits", { method: "PUT", body: JSON.stringify(body), cache: "no-store" })
         .then(function (res) {
+          if (res.status === 401) { location.reload(); return; }
           if (!res.ok) throw new Error("HTTP " + res.status);
           pendingLimits = { max_daily_loss: loss, max_open_trades: trades, risk_pct: risk, risk_max_over: over, at: Date.now() };
           limitDraft = {};
@@ -848,6 +855,7 @@
       btn.textContent = "Clearing…";
       fetch(CONTROL_URL + "_reset", { method: "PUT", body: id, cache: "no-store" })
         .then(function (res) {
+          if (res.status === 401) { location.reload(); return; }
           if (!res.ok) throw new Error("HTTP " + res.status);
           pendingReset = { id: id, at: Date.now() };
           watchPending();
@@ -1429,6 +1437,10 @@
   });
 
   load();
+  document.getElementById("logout").addEventListener("click", function () {
+    location.href = "/auth/logout";
+  });
+
   setInterval(load, REFRESH_MS);
   pollLive();
   setInterval(pollLive, LIVE_MS);
