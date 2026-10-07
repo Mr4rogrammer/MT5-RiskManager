@@ -578,6 +578,34 @@ detail. It grows by roughly 60 MB a year, almost all of it raw events.
 - Query it directly on the VPS with `sqlite3 config/data/bots.db`, e.g.
   `SELECT bot, exit_reason, COUNT(*), ROUND(SUM(net), 2) FROM trades GROUP BY 1, 2;`
 
+## Telegram alerts
+
+Every **rejected** order and bot **error** is sent to a Telegram chat
+(`app/telegram_alert.py`), so a problem that keeps rejecting trades — Algo Trading off,
+market closed, invalid stops — is seen without opening the logs:
+
+```
+⚠️ 2-candle CRT: REJECTED · EURUSD M15 BUY
+rejected 10027: Algo Trading disabled in the terminal (broker: AutoTrading disabled by client)
+price 1.1 · SL 1.09 · TP 1.12 · lot 0.2
++ 4 more like this in the last 30 min
+```
+
+The same problem (bot + reason) is sent at most once every `TELEGRAM_REPEAT_MINUTES`; the
+next message counts the ones in between. Sending runs in its own thread, so a bot never
+waits on Telegram.
+
+1. Create a bot with @BotFather and send it `/start` from your Telegram.
+2. Find your chat id: open `https://api.telegram.org/bot<token>/getUpdates` → `"chat":{"id":…}`.
+3. Set in `.env` (never commit the token) and rebuild `mt5`:
+
+| Variable | Default | Description |
+| -------- | ------- | ----------- |
+| `TELEGRAM_BOT_TOKEN` | — | Bot token (alerts off when empty) |
+| `TELEGRAM_CHAT_ID` | — | Chat to send to |
+| `TELEGRAM_STATUSES` | `rejected,error` | Event statuses that alert (e.g. add `opened`) |
+| `TELEGRAM_REPEAT_MINUTES` | `30` | Minutes before the same problem is sent again |
+
 ## Bot Dashboard
 
 `http://your-server-ip:8080` shows, for any date range, bot, symbol and timeframe:

@@ -44,6 +44,7 @@ from datetime import datetime, timezone
 import MetaTrader5 as mt5
 
 import risk_guard
+import telegram_alert
 import trade_db
 from mt5_guard import MT5_LOCK
 
@@ -286,6 +287,7 @@ class Bot:
         self.events.append(event)
         logger.info("%s %s %s: %s %s", self.label, symbol, tf_name, status, details)
         trade_db.log_event(self.name, symbol, tf_name, status, details)
+        telegram_alert.alert(self.title, self.name, symbol, tf_name, status, details)
 
     def magic(self, tf_name):
         return self.settings["magic_base"] + TIMEFRAMES[tf_name][1] // 60
