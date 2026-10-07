@@ -83,9 +83,17 @@ def _be_price(c1_high, c1_low, side):
 
 
 def _be_trigger(pos):
-    """Break-even trigger for an open position; rebuilt from its C1 candle if not cached."""
+    """
+    Break-even trigger for an open position: cached, else the level journaled when it
+    opened (survives restarts), else rebuilt from its C1 candle (e.g. adopted trades).
+    """
     if pos.ticket in _be_level:
         return _be_level[pos.ticket]
+
+    row = BOT._journal(pos.ticket)
+    if row and row.get("be_trigger"):
+        _be_level[pos.ticket] = row["be_trigger"]
+        return row["be_trigger"]
 
     # Comment: "CRT2 <TF> <C1 open time>"
     parts   = pos.comment.split()
@@ -93,9 +101,11 @@ def _be_trigger(pos):
     if len(parts) < 3 or tf_name is None or not parts[2].isdigit():
         return None
 
-    c1_time = datetime.fromtimestamp(int(parts[2]), timezone.utc)
-    rates   = mt5.copy_rates_range(pos.symbol, TIMEFRAMES[tf_name][0], c1_time, c1_time)
-    if rates is None or len(rates) == 0:
+    # The bar opened at or before C1's open time = C1 itself
+    c1_ts = int(parts[2])
+    rates = mt5.copy_rates_from(pos.symbol, TIMEFRAMES[tf_name][0],
+                                datetime.fromtimestamp(c1_ts, timezone.utc), 1)
+    if rates is None or len(rates) == 0 or int(rates[0]["time"]) != c1_ts:
         return None
 
     side  = "BUY" if pos.type == mt5.POSITION_TYPE_BUY else "SELL"

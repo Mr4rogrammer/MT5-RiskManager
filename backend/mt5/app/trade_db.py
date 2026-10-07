@@ -376,12 +376,12 @@ def trade_breakeven(ticket, new_sl):
 
 
 def trade_info(ticket):
-    """Entry, initial SL and opened volume of a journaled trade (dict), or None."""
+    """Entry, initial SL, opened volume and BE trigger of a journaled trade (dict), or None."""
     if _conn is None:
         return None
     with _lock:
-        row = _conn.execute("SELECT entry_price, sl_initial, volume FROM trades WHERE ticket = ?",
-                            (ticket,)).fetchone()
+        row = _conn.execute("SELECT entry_price, sl_initial, volume, be_trigger FROM trades"
+                            " WHERE ticket = ?", (ticket,)).fetchone()
     return dict(row) if row else None
 
 

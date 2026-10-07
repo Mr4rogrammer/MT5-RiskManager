@@ -627,14 +627,16 @@ class Bot:
         if (is_buy and sl >= new_sl) or (not is_buy and sl <= new_sl):
             return   # already at (or past) break-even
 
-        # Bank part of the profit at the moment the SL goes to break-even
-        self._partial_close(pos, info, tick)
-
-        # SL must sit on the losing side of price, outside the stops/freeze level
+        # SL must sit on the losing side of price, outside the stops/freeze level.
+        # Checked before the partial so a trigger already behind entry (CRT2 entering
+        # past its 45 % level) doesn't close half the trade at entry, before any profit.
         min_dist = max(info.trade_stops_level, info.trade_freeze_level, 1) * info.point
         gap = current - new_sl if is_buy else new_sl - current
         if gap < min_dist:
             return
+
+        # Bank part of the profit at the moment the SL goes to break-even
+        self._partial_close(pos, info, tick)
 
         request = {
             "action":   mt5.TRADE_ACTION_SLTP,
