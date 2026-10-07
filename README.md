@@ -535,6 +535,8 @@ The lot is rounded **down** to the broker's volume step, so the risk never excee
 The one exception is the broker's minimum lot (usually 0.01): if even that risks more than
 `BOTS_RISK_MAX_OVER` × the target (default 1.5), the trade is skipped and shows up in the
 dashboard's skip reasons. Set `BOTS_RISK_PCT=0` to go back to each bot's fixed `*_LOT`.
+Both can also be changed on the dashboard's *Account limits* card (see below), which then
+overrides `.env`.
 
 Tested with all 13 bots polling 25× faster than live, plus 8 extra journal writers, for 20 s:
 0 overlapping MT5 calls, 0 database errors, no deadlock. With the MT5 lock disabled, the same
@@ -638,15 +640,26 @@ together** (`risk_guard.py`). 0 = off.
 | ----- | ------------ |
 | **Max daily loss** (account currency) | Counts every bot trade closed today — by the bot, SL/TP, by hand in MT5 or a stop-out — plus today's floating P/L of open ones (for a trade opened before today, only the move since the day's open), with commission and swap. When it reaches −limit, **every open bot trade is closed** and no bot opens a new one until the next broker day (broker midnight). |
 | **Max open trades** | A new trade is skipped while this many bot trades are open. A higher-TF override that replaces a trade still goes ahead. |
+| **Risk per trade** (% of balance) | Lot size of every new trade, as `BOTS_RISK_PCT` (0 = each bot's fixed lot, max 10). Open trades keep their size. |
+| **Min-lot tolerance** (× risk) | As `BOTS_RISK_MAX_OVER`: how far the broker's minimum lot may exceed the target risk before the trade is skipped (1 = never). |
 
 - Checked every 2 seconds (`BOTS_GUARD_INTERVAL`). Manual trades are ignored, both in the
   count and when closing.
 - Saved to `config/control/_limits`; the bots apply it within seconds. Until it's set on
-  the dashboard, `BOTS_MAX_DAILY_LOSS` and `BOTS_MAX_OPEN_TRADES` in `.env` apply.
+  the dashboard, `BOTS_MAX_DAILY_LOSS`, `BOTS_MAX_OPEN_TRADES`, `BOTS_RISK_PCT` and
+  `BOTS_RISK_MAX_OVER` in `.env` apply. Delete the file to go back to `.env`.
 - A halt lasts until the next broker day. Raising the limit doesn't lift it; setting it to
   0 does. After a restart the halt comes back if today's closed trades already lost the limit.
 - Skipped entries show in the skip reasons ("daily loss limit hit", "max open trades
   reached"), and trades closed by the halt show as exit reason "Daily loss limit".
+
+**Clear all data.** The button at the bottom of the dashboard (type `CLEAR` to confirm)
+deletes every trade and event in the journal, for all bots, **with no backup** — e.g. after
+logging in to a new MT5 account. It takes effect on the next sync (about 30 s). Bots, their
+Start/Stop state and the account limits are kept, and trades opened before the clear are
+never imported again (neither by the 90-day back-fill nor by adopting open positions), so
+the dashboard starts from zero. Trades still open at that moment keep running in MT5 but
+aren't tracked.
 - The `/bots/<name>/start|stop` API routes still work, and the latest action (API or
   button) wins until the button is pressed again.
 
