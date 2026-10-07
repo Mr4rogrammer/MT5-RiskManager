@@ -8,10 +8,16 @@ Account-wide limits shared by every bot (prop-firm style).
   Max open trades  a new trade is skipped while this many bot trades are open
                    (an override that replaces a trade doesn't add one).
 
-Both are set on the dashboard, which stores them in <BOTS_CONTROL_DIR>/_limits as JSON.
-Until the dashboard saves a value, these env vars apply:
+Position size lives here too, so the dashboard can change it (bot_common.risk_volume):
+  Risk per trade   % of the balance lost if a trade's SL is hit (0 = each bot's fixed lot)
+  Min-lot over     the broker's minimum lot may risk up to this × the target, else skip
+
+All four are set on the dashboard, which stores them in <BOTS_CONTROL_DIR>/_limits as
+JSON. Until the dashboard saves a value, these env vars apply:
   BOTS_MAX_DAILY_LOSS    account currency, 0 = off (default 0)
   BOTS_MAX_OPEN_TRADES   0 = off (default 0)
+  BOTS_RISK_PCT          % of balance per trade (default 0.5)
+  BOTS_RISK_MAX_OVER     (default 1.5)
   BOTS_GUARD_INTERVAL    seconds between daily-loss checks (default 2)
 
 Only trades with a bot's magic number count; manual trades are ignored. The broker day
@@ -38,7 +44,16 @@ logger = logging.getLogger(__name__)
 
 LIMITS_FILE = "_limits"
 
-limits = {"max_daily_loss": 0.0, "max_open_trades": 0, "source": "env"}
+limits = {"max_daily_loss": 0.0, "max_open_trades": 0, "risk_pct": 0.5, "risk_max_over": 1.5,
+          "source": "env"}
+
+# key -> (type, min, max) for values the dashboard may set
+_FIELDS = {
+    "max_daily_loss":  (float, 0.0, None),
+    "max_open_trades": (int,   0,   None),
+    "risk_pct":        (float, 0.0, 10.0),
+    "risk_max_over":   (float, 1.0, 10.0),
+}
 state  = {"day_open": None, "halted_day": None, "today_net": None}
 
 _bots = {}                 # bot_common.BOTS, passed in by start()
@@ -58,6 +73,8 @@ def _load_env():
     limits.update({
         "max_daily_loss":  max(0.0, float(os.environ.get("BOTS_MAX_DAILY_LOSS", "0"))),
         "max_open_trades": max(0, int(os.environ.get("BOTS_MAX_OPEN_TRADES", "0"))),
+        "risk_pct":        max(0.0, float(os.environ.get("BOTS_RISK_PCT", "0.5"))),
+        "risk_max_over":   max(1.0, float(os.environ.get("BOTS_RISK_MAX_OVER", "1.5"))),
         "source":          "env",
     })
 
@@ -72,25 +89,30 @@ def _load_control():
             return
         _control_mtime = mtime
         with open(path, encoding="utf-8", errors="replace") as f:
-            raw = json.loads(f.read(256))
-        loss = float(raw["max_daily_loss"])
-        trades = int(raw["max_open_trades"])
-        if loss < 0 or trades < 0 or loss != loss:
-            raise ValueError("negative or NaN")
+            raw = json.loads(f.read(512))
+        new = {}
+        for key, (cast, lo, hi) in _FIELDS.items():
+            if key not in raw:
+                continue                      # older file: keep the current value
+            value = cast(raw[key])
+            if value != value or value < lo or (hi is not None and value > hi):
+                raise ValueError(f"{key}={raw[key]!r} out of range")
+            new[key] = value
+        if not new:
+            raise ValueError("no known settings")
     except FileNotFoundError:
         return
-    except (OSError, ValueError, KeyError, TypeError) as exc:
+    except (OSError, ValueError, TypeError, AttributeError) as exc:
         logger.warning("risk guard: ignoring %s (%s)", path, exc)
         return
-    limits.update({"max_daily_loss": loss, "max_open_trades": trades, "source": "dashboard"})
-    logger.info("risk guard: limits from dashboard: max daily loss %.2f, max open trades %d",
-                loss, trades)
+    limits.update(new, source="dashboard")
+    logger.info("risk guard: settings from dashboard: %s", new)
     _publish_limits()
 
 
 def _publish_limits():
     trade_db.set_meta("limits", json.dumps(
-        {k: limits[k] for k in ("max_daily_loss", "max_open_trades", "source")}, sort_keys=True))
+        {k: limits[k] for k in (*_FIELDS, "source")}, sort_keys=True))
 
 
 # ---------------------------------------------------------------------------
@@ -314,6 +336,6 @@ def start(bots, control_dir):
         logger.exception("risk guard first check failed")
     interval = float(os.environ.get("BOTS_GUARD_INTERVAL", "2"))
     threading.Thread(target=_loop, args=(interval,), daemon=True, name="risk-guard").start()
-    logger.info("risk guard started: max daily loss %s, max open trades %s (%s)",
+    logger.info("risk guard started: max daily loss %s, max open trades %s, risk %s%% (%s)",
                 limits["max_daily_loss"] or "off", limits["max_open_trades"] or "off",
-                limits["source"])
+                limits["risk_pct"], limits["source"])

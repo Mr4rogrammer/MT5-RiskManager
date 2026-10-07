@@ -18,7 +18,7 @@ Commission settings are broker-wide and shared by every bot:
   CRT_COMMISSION_PCT_SYMBOLS  symbols charged a % of notional instead (default BTCUSD)
   CRT_COMMISSION_PCT_RATE     round-trip % for those symbols (default 0.04 → 0.04 %)
 
-Position size is also shared by every bot:
+Position size is also shared by every bot, settable on the dashboard (risk_guard.limits):
   BOTS_RISK_PCT               % of the account balance lost if the SL is hit (default 0.5).
                               0 = use each bot's fixed lot setting instead.
   BOTS_RISK_MAX_OVER          the broker's minimum lot may risk up to this × the target
@@ -66,8 +66,6 @@ BE_RETRY_SECONDS = 60
 # Broker commission settings — filled by load_fees()
 fees = {}
 
-# Position sizing settings — filled by load_fees()
-sizing = {}
 
 # Dashboard start/stop files — see Bot._apply_control
 CONTROL_DIR = os.environ.get("BOTS_CONTROL_DIR", "/config/control").rstrip("/\\")
@@ -109,10 +107,6 @@ def load_fees():
         }),
         "commission_pct_rate":    float(os.environ.get("CRT_COMMISSION_PCT_RATE", "0.04")),
     })
-    sizing.update({
-        "risk_pct":      float(os.environ.get("BOTS_RISK_PCT", "0.5")),
-        "risk_max_over": float(os.environ.get("BOTS_RISK_MAX_OVER", "1.5")),
-    })
 
 
 # ---------------------------------------------------------------------------
@@ -147,15 +141,15 @@ def risk_volume(side, symbol, price, sl, info):
     account = mt5.account_info()
     if account is None or account.balance <= 0:
         return None, ("account_info unavailable", {})
-    target   = account.balance * sizing["risk_pct"] / 100.0
+    target   = account.balance * risk_guard.limits["risk_pct"] / 100.0
     loss_lot = profit_usd(side, symbol, 1.0, price, sl)
     if not loss_lot:
         return None, ("order_calc_profit failed for risk sizing", {})
     volume = normalize_volume(target / abs(loss_lot), info)
     risk   = abs(loss_lot) * volume
-    if risk > target * sizing["risk_max_over"]:
-        return None, (f"minimum lot risks over {sizing['risk_max_over']}x the "
-                      f"{sizing['risk_pct']}% target",
+    if risk > target * risk_guard.limits["risk_max_over"]:
+        return None, (f"minimum lot risks over {risk_guard.limits['risk_max_over']}x the "
+                      f"{risk_guard.limits['risk_pct']}% target",
                       {"volume": volume, "risk": round(risk, 2), "target": round(target, 2)})
     return volume, None
 
@@ -394,7 +388,7 @@ class Bot:
             return False
 
         # Size — BOTS_RISK_PCT % of the balance at the SL, or the bot's fixed lot
-        if sizing["risk_pct"] > 0:
+        if risk_guard.limits["risk_pct"] > 0:
             volume, why = risk_volume(side, symbol, price, sl, info)
             if volume is None:
                 reason, details = why

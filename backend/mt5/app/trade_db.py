@@ -48,6 +48,11 @@ Settings (env vars):
   BOT_DB_EVENT_SNAPSHOT_SECONDS  min seconds between snapshots caused only by new
                          events (default 300)
   BOT_DB_DAILY_COUNT_DAYS  days of daily event counts before merging into weeks (default 30)
+
+Clear all data (dashboard button): the page writes a request id to
+<BOTS_CONTROL_DIR>/_reset. On the next sync every trade and event is deleted (no backup),
+bots and meta (limits, broker offset) are kept, and trades opened before the reset are
+never imported again — not by the back-fill, not by adopting open positions.
 """
 
 import json
@@ -71,11 +76,12 @@ SYNC_SECONDS = 30.0
 BACKFILL_DAYS = 90
 EVENT_SNAPSHOT_SECONDS = 300.0
 DAILY_COUNT_DAYS = 30
+CONTROL_DIR = "/config/control"
 
 
 def _load_settings():
     global DB_DIR, DB_PATH, SNAPSHOT_PATH, SYNC_SECONDS, BACKFILL_DAYS
-    global EVENT_SNAPSHOT_SECONDS, DAILY_COUNT_DAYS
+    global EVENT_SNAPSHOT_SECONDS, DAILY_COUNT_DAYS, CONTROL_DIR
     DB_DIR        = os.environ.get("BOT_DB_DIR", "/config/data")
     DB_PATH       = os.path.join(DB_DIR, "bots.db")
     SNAPSHOT_PATH = os.path.join(DB_DIR, "dashboard.db")
@@ -83,6 +89,7 @@ def _load_settings():
     BACKFILL_DAYS = int(os.environ.get("BOT_DB_BACKFILL_DAYS", "90"))
     EVENT_SNAPSHOT_SECONDS = float(os.environ.get("BOT_DB_EVENT_SNAPSHOT_SECONDS", "300"))
     DAILY_COUNT_DAYS = int(os.environ.get("BOT_DB_DAILY_COUNT_DAYS", "30"))
+    CONTROL_DIR   = os.environ.get("BOTS_CONTROL_DIR", "/config/control").rstrip("/\\")
 
 TF_MINUTES = {15: "M15", 30: "M30", 60: "H1", 240: "H4"}
 
@@ -471,6 +478,54 @@ def _complete_from_history(row):
     )
 
 
+def _meta(key):
+    with _lock:
+        row = _conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row else None
+
+
+def _reset_cutoff():
+    """Broker time of the last "Clear all data"; trades opened before it stay out. 0 = none."""
+    try:
+        return int(_meta("reset_at_broker") or 0)
+    except ValueError:
+        return 0
+
+
+def _check_reset():
+    """Run a "Clear all data" requested by the dashboard (once per request id)."""
+    try:
+        with open(f"{CONTROL_DIR}/_reset", encoding="ascii", errors="replace") as f:
+            request = f.read(64).strip()
+    except OSError:
+        return
+    if request and request != _meta("reset_id"):
+        reset(request)
+
+
+def reset(request_id):
+    """Delete every trade and event (no backup); keep bots and meta. See module docstring."""
+    global _dirty
+    try:
+        offset = int(_meta("broker_offset_seconds") or 0)
+    except ValueError:
+        offset = 0
+    now = int(time.time())
+    with _lock:
+        for table in ("trades", "events", "event_counts"):
+            _conn.execute(f"DELETE FROM {table}")
+        _conn.execute("UPDATE bots SET first_seen = ?", (now,))
+        for key, value in (("reset_id", request_id), ("reset_at", str(now)),
+                           ("reset_at_broker", str(now + offset))):
+            _conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, value))
+        _conn.commit()
+        _conn.execute("VACUUM")          # give the space back; outside any transaction
+        _dirty = True
+    logger.warning("trade_db: all trades and events cleared from the dashboard (request %s)",
+                   request_id)
+    snapshot(force=True)
+
+
 def _backfill(bot_name):
     """Import this bot's positions from the last BACKFILL_DAYS of MT5 history."""
     magics = {m for m, (name, _) in _bots.items() if name == bot_name}
@@ -480,8 +535,9 @@ def _backfill(bot_name):
     if deals is None:
         raise RuntimeError(f"history_deals_get failed: {mt5.last_error()}")
 
+    cutoff = _reset_cutoff()
     tickets = {d.position_id for d in deals
-               if d.magic in magics and d.entry == mt5.DEAL_ENTRY_IN}
+               if d.magic in magics and d.entry == mt5.DEAL_ENTRY_IN and d.time >= cutoff}
     added = 0
     for ticket in tickets:
         if not _known(ticket):
@@ -503,9 +559,10 @@ def sync():
         except Exception:
             logger.exception("trade_db: back-fill failed for %s", bot_name)
 
-    # Adopt open bot positions the DB doesn't know about
+    # Adopt open bot positions the DB doesn't know about (not ones from before a reset)
+    cutoff = _reset_cutoff()
     for pos in mt5.positions_get() or []:
-        if pos.magic in _bots and not _known(pos.ticket):
+        if pos.magic in _bots and pos.time >= cutoff and not _known(pos.ticket):
             _insert_from_history(pos.ticket, pos)
 
     # Complete trades that are no longer open
@@ -607,6 +664,10 @@ def _sync_loop():
     global _last_compact
     time.sleep(5)   # let both bots register first
     while True:
+        try:
+            _check_reset()        # DB only, no MT5 call
+        except Exception:
+            logger.exception("trade_db: clear-all-data failed")
         try:
             with MT5_LOCK:        # MT5 reads; the DB writes inside take _lock second
                 sync()
