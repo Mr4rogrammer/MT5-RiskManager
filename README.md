@@ -709,6 +709,12 @@ the bots' risk guard rewrites every ~2 s; the page polls it every 5 s and update
 numbers, so it stays live without re-downloading the database.
 For ranges over 30 days, event counts are rounded to whole weeks.
 
+**Login.** The dashboard opens on its own sign-in page (no browser password dialog). nginx
+checks the username and password itself (`backend/dashboard/auth.js`, nginx's built-in njs
+module) and sets a signed, HttpOnly session cookie — for 1 day, or 30 days with *Keep me
+signed in*. **Log out** in the header ends it. Login attempts are limited to 10 a minute per
+visitor. Changing `DASHBOARD_PASSWORD` (and restarting the dashboard) signs everyone out.
+
 Set the login in `.env`. The container refuses to start without it:
 
 ```env
