@@ -14,7 +14,8 @@ Pattern (per symbol, HTF-first: H4 → H1 → M30 → M15):
        plus CRT_SL_BUFFER_SPREADS × spread on both sides
   TP : opposite side of C1 (C1.low for SELL, C1.high for BUY)
   BE : SL moves to entry ± round-trip commission once price covers
-       CRT_BE_TRIGGER (default 47 %) of the entry→TP distance
+       CRT_BE_TRIGGER (default 47 %) of the entry→TP distance, and at that moment
+       CRT_PARTIAL_PCT (default 50 %) of the position is closed to bank profit
 
   C3 entry only — a setup is ignored once C3 is older than CRT_MAX_SIGNAL_AGE s.
 
@@ -33,6 +34,9 @@ Settings (env vars):
   CRT_SL_BUFFER_SPREADS   extra SL room beyond the wick, × spread (default 0)
   CRT_MIN_SL_SPREADS      minimum SL distance, × spread (default 3, 0 disables)
   CRT_BE_TRIGGER          fraction of entry→TP that triggers break-even (default 0.47)
+  CRT_PARTIAL_PCT         % of the position closed when break-even triggers (default 50, 0 = off)
+  CRT_TRAIL_R             after break-even, trail the SL this × the initial risk behind price
+                          (default 0 = off; the TP stays at C1's far side)
   CRT_COMMISSION_*        see bot_common.py
 """
 
@@ -160,6 +164,8 @@ def start_crt_bot():
         "sl_buffer_spreads": float(os.environ.get("CRT_SL_BUFFER_SPREADS", "0")),
         "min_sl_spreads":    float(os.environ.get("CRT_MIN_SL_SPREADS", "3")),
         "be_trigger":        float(os.environ.get("CRT_BE_TRIGGER", "0.47")),
+        "partial_pct":       float(os.environ.get("CRT_PARTIAL_PCT", "50")),
+        "trail_r":           float(os.environ.get("CRT_TRAIL_R", "0")),
     })
     BOT.start(_check, _be_trigger,
               enabled_by_default=os.environ.get("CRT_ENABLED", "false").lower() == "true")

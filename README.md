@@ -252,6 +252,10 @@ sessions or lower-timeframe confirmation.
    so a break-even exit really nets about $0. The move is skipped while price is within
    the broker's stops/freeze level. A rejected move is retried after 60 seconds, not every
    poll. Break-even runs every poll, even after `/bot/stop`.
+   **At the same moment, half the position is closed** (`CRT_PARTIAL_PCT`, default 50%) to
+   bank profit; the rest runs to TP or back to break-even. A trade too small to split
+   (e.g. 0.01 lot) skips the partial and only moves to break-even. Optionally the SL then
+   trails behind price (`CRT_TRAIL_R`, off by default; see *Exits* below).
 2. **One trade per pair, higher timeframe wins.** While a CRT trade is open on a symbol,
    the bot only scans timeframes **higher** than that trade's:
 
@@ -338,6 +342,8 @@ Event statuses in `/bot/status`: `signal`, `opened`, `closed` (higher-TF overrid
 | `CRT_SL_BUFFER_SPREADS` | `0` | Extra SL room beyond the C2 wick, in multiples of the spread |
 | `CRT_MIN_SL_SPREADS` | `3` | Skip setups whose SL is closer than N × spread (`0` disables) |
 | `CRT_BE_TRIGGER` | `0.47` | Fraction of the entry→TP distance at which SL moves to break-even |
+| `CRT_PARTIAL_PCT` | `50` | % of the position closed when break-even triggers (0 = off) |
+| `CRT_TRAIL_R` | `0` | After break-even, trail the SL this × the initial risk behind price (0 = off) |
 
 If your broker uses suffixed symbol names (e.g. `XAUUSDm`), list them exactly in
 `CRT_SYMBOLS`. Note that `CRT_COMMISSION_PCT_SYMBOLS` is uppercased when it is read, so a
@@ -398,6 +404,8 @@ find C1 again after a restart. Commission settings (`CRT_COMMISSION_*`) are shar
 | `CRT2_SL_BUFFER_SPREADS` | `0` | Extra SL room beyond the sweep, in multiples of the spread |
 | `CRT2_MIN_SL_SPREADS` | `3` | Skip setups whose SL is closer than N × spread (`0` disables) |
 | `CRT2_BE_TRIGGER` | `0.45` | How far into C1's range (from the swept side) break-even triggers |
+| `CRT2_PARTIAL_PCT` | `50` | % of the position closed when break-even triggers (0 = off) |
+| `CRT2_TRAIL_R` | `0` | After break-even, trail the SL this × the initial risk (0 = off) |
 
 ## Daily Sweep Bot
 
@@ -469,7 +477,7 @@ cd tools/backtest && python3 -m venv venv && venv/bin/pip install -r requirement
 ./fetch_fxcm.sh && venv/bin/python backtest.py
 ```
 
-## Indicator Bots (10 popular strategies)
+## Indicator Bots (10 popular strategies + 2 exit variants)
 
 `app/indicator_bots.py` runs ten widely shared indicator strategies, **each as its own bot**,
 for side-by-side testing on a demo account. They all use the same rules so the comparison is
@@ -480,7 +488,7 @@ fair:
   enters. The dashboard's *bot × timeframe* table shows which timeframe works.
 - **Signals:** read on each closed candle, entered within 5 minutes of the close.
 - **Risk:** SL = 1.5 × ATR(14); TP = 2 × the SL distance (Bollinger targets the middle band).
-  No break-even.
+  No break-even, unless set with `IND_<KEY>_BE_R`.
 
 | Bot | Rule |
 | --- | ---- |
@@ -494,14 +502,34 @@ fair:
 | `donchian` Donchian breakout | Close above the previous 20-candle high / below the low |
 | `stoch` Stochastic + 200 EMA | %K crosses %D below 20 / above 80, with the EMA 200 trend |
 | `ichimoku` Ichimoku TK cross | Tenkan crosses Kijun with price on the right side of the cloud |
+| `donchian_pt` Donchian + trail | Same signal as `donchian`; at 1R close 50% and move SL to break-even, then trail the rest 2R behind price, TP at 10R |
+| `supertrend_pt` Supertrend + trail | Same signal as `supertrend`, managed the same way |
+
+The two `_pt` bots race the originals on the same signals, so the dashboard shows whether
+letting winners run beats the fixed 1:2 target. With `IND_ALL_ENABLED=true` they start
+trading on their first boot; stop them on the dashboard if you don't want them.
 
 Turn them all on with `IND_ALL_ENABLED=true`, or one at a time with `IND_<KEY>_ENABLED=true`
 (e.g. `IND_MACD_ENABLED`). Per-bot settings: `IND_<KEY>_SYMBOLS`, `_TFS`, `_LOT`, `_SL_ATR`,
-`_RR`, `_MAGIC_BASE` (default 801000, 802000, … 810000), `_MAX_SIGNAL_AGE`, `_MIN_SL_SPREADS`,
-`_POLL_INTERVAL`. Start and stop each one with `/bots/<key>/start|stop`.
+`_RR`, `_MAGIC_BASE` (default 801000, 802000, … 812000), `_MAX_SIGNAL_AGE`, `_MIN_SL_SPREADS`,
+`_POLL_INTERVAL`, and the exit options `_BE_R` (break-even at this many R in profit),
+`_PARTIAL_PCT` (% closed at that moment) and `_TRAIL_R` (trailing distance in R), e.g.
+`IND_DONCHIAN_TRAIL_R=2`. Start and stop each one with `/bots/<key>/start|stop`.
 
 The dashboard's **leaderboard** ranks every bot, and each bot card has its own equity curve.
 Judge them on average R over 100+ trades, not on win rate or the first few weeks.
+
+### Exits: partial close and trailing stop
+
+Every bot can use these, set per bot (`CRT_*`, `CRT2_*`, `DSW_*`, `IND_<KEY>_*`):
+
+| Setting | What happens |
+| ------- | ------------ |
+| `*_PARTIAL_PCT` | When break-even triggers, this % of the position is closed at market, then the SL moves to break-even. Once per trade. Skipped (logged as `partial_skipped`) when either part would be below the broker's minimum lot. |
+| `*_TRAIL_R` | Once the SL is at break-even or better, it follows price at this × the initial risk (bid for BUY, ask for SELL). It only tightens, in steps of at least 0.1R, and keeps the TP. |
+
+On the dashboard, a trade whose SL was trailed into profit closes as **Trailing stop**. A
+break-even exit after a partial counts as a win (its net is the banked part).
 
 ### Threads and locking
 
@@ -538,7 +566,7 @@ dashboard's skip reasons. Set `BOTS_RISK_PCT=0` to go back to each bot's fixed `
 Both can also be changed on the dashboard's *Account limits* card (see below), which then
 overrides `.env`.
 
-Tested with all 13 bots polling 25× faster than live, plus 8 extra journal writers, for 20 s:
+Tested with 13 bots polling 25× faster than live, plus 8 extra journal writers, for 20 s:
 0 overlapping MT5 calls, 0 database errors, no deadlock. With the MT5 lock disabled, the same
 test showed ~17,000 overlapping calls.
 

@@ -7,7 +7,9 @@ break-even trigger price. Everything else is the same for every bot and lives he
   • Bot.loop        — poll loop: break-even → one trade per pair → HTF-first scan
   • Bot.place       — filters (price, min SL, fees, RR, stops level), HTF override,
                       order send
-  • Bot.breakeven   — move SL to entry ± round-trip commission at a trigger price
+  • Bot.breakeven   — move SL to entry ± round-trip commission at a trigger price,
+                      closing `partial_pct` % of the position at the same moment
+  • Bot.trail       — after break-even, trail the SL `trail_r` × the initial risk behind price
   • Bot.close       — close a position at market
   • fee / price helpers (commission, spread cost, volume, filling mode)
 
@@ -226,7 +228,8 @@ class Bot:
     /bots API routes automatically.
 
     Required settings: symbols, lot, deviation, magic_base, poll_interval,
-    min_rr, min_sl_spreads.
+    min_rr, min_sl_spreads. Optional: partial_pct (% closed at break-even, default 0),
+    trail_r (trailing distance in R after break-even, default 0 = off).
     """
 
     def __init__(self, name, label, prefix, title=None, description=None):
@@ -242,6 +245,9 @@ class Bot:
         self._started = False
         self._start_lock = threading.Lock()
         self._be_retry_after = {}   # ticket -> unix time
+        self._trail_retry_after = {}
+        self._partial_done = set()  # tickets already partly closed (or that can't be)
+        self._trade_info = {}       # ticket -> journal row (entry, initial SL, volume)
         self._account_checked = False
         self._control_mtime = None  # mtime of the control file last applied
 
@@ -487,11 +493,117 @@ class Bot:
                     price=fill, sl=request["sl"], tp=request["tp"])
         return True
 
+    # -- open-trade management ------------------------------------------------
+
+    def manage(self, pos, trigger):
+        """Break-even (+ partial close), then the trailing stop. Caller holds MT5_LOCK."""
+        self.breakeven(pos, trigger)
+        if self.settings.get("trail_r", 0) > 0:
+            self.trail(pos)
+
+    def _journal(self, ticket):
+        """The trade's journal row (entry, initial SL, opened volume), cached; None if unknown."""
+        if ticket not in self._trade_info:
+            row = trade_db.trade_info(ticket)
+            if row is None:
+                return None
+            self._trade_info[ticket] = row
+        return self._trade_info[ticket]
+
+    def _partial_close(self, pos, info, tick):
+        """
+        Close `partial_pct` % of the position at market, once. Skipped (and logged once)
+        when either part would be below the broker's minimum lot — e.g. a 0.01 lot trade.
+        """
+        pct = self.settings.get("partial_pct", 0)
+        if pct <= 0 or pos.ticket in self._partial_done:
+            return
+        row = self._journal(pos.ticket)
+        if row and row["volume"] and pos.volume < row["volume"] - 1e-9:
+            self._partial_done.add(pos.ticket)         # already partly closed (e.g. before a restart)
+            return
+        self._partial_done.add(pos.ticket)
+        step = info.volume_step or 0.01
+        part = round(math.floor(pos.volume * pct / 100.0 / step + 1e-9) * step, 8)
+        rest = round(pos.volume - part, 8)
+        if part < info.volume_min or rest < info.volume_min:
+            self.record(pos.symbol, self.position_tf(pos), "partial_skipped", ticket=pos.ticket,
+                        volume=pos.volume, reason="volume too small to split")
+            return
+        is_buy = pos.type == mt5.POSITION_TYPE_BUY
+        request = {
+            "action":       mt5.TRADE_ACTION_DEAL,
+            "position":     pos.ticket,
+            "symbol":       pos.symbol,
+            "volume":       part,
+            "type":         mt5.ORDER_TYPE_SELL if is_buy else mt5.ORDER_TYPE_BUY,
+            "price":        tick.bid if is_buy else tick.ask,
+            "deviation":    self.settings["deviation"],
+            "magic":        pos.magic,
+            "comment":      f"{self.label} partial"[:31],
+            "type_time":    mt5.ORDER_TIME_GTC,
+            "type_filling": filling_mode(info),
+        }
+        result = mt5.order_send(request)
+        if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+            self.record(pos.symbol, self.position_tf(pos), "partial", ticket=pos.ticket,
+                        closed=part, remaining=rest, price=result.price)
+        else:
+            err = result.retcode if result else mt5.last_error()
+            logger.warning("%s partial close failed: %s ticket=%s err=%s",
+                           self.label, pos.symbol, pos.ticket, err)
+
+    def trail(self, pos):
+        """
+        Once the SL is at break-even or better, keep it `trail_r` × the initial risk
+        behind price (bid for BUY, ask for SELL). Only ever tightens, in steps of at
+        least 0.1R; the TP is kept.
+        """
+        if pos.sl == 0 or time.time() < self._trail_retry_after.get(pos.ticket, 0):
+            return
+        row = self._journal(pos.ticket)
+        if not row or not row["sl_initial"] or not row["entry_price"]:
+            return
+        risk = abs(row["entry_price"] - row["sl_initial"])
+        if risk <= 0:
+            return
+        is_buy = pos.type == mt5.POSITION_TYPE_BUY
+        entry = pos.price_open
+        if (is_buy and pos.sl < entry) or (not is_buy and pos.sl > entry):
+            return                                       # not at break-even yet
+
+        tick = mt5.symbol_info_tick(pos.symbol)
+        info = mt5.symbol_info(pos.symbol)
+        if tick is None or info is None:
+            return
+        current = tick.bid if is_buy else tick.ask
+        dist = self.settings["trail_r"] * risk
+        new_sl = round(current - dist if is_buy else current + dist, info.digits)
+        gain = new_sl - pos.sl if is_buy else pos.sl - new_sl
+        if gain < max(0.1 * risk, info.point):
+            return
+        min_dist = max(info.trade_stops_level, info.trade_freeze_level, 1) * info.point
+        if dist < min_dist:
+            return
+
+        result = mt5.order_send({"action": mt5.TRADE_ACTION_SLTP, "position": pos.ticket,
+                                 "symbol": pos.symbol, "sl": new_sl, "tp": pos.tp})
+        if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+            self._trail_retry_after.pop(pos.ticket, None)
+            logger.info("%s trail: %s ticket=%s SL %s -> %s", self.label, pos.symbol,
+                        pos.ticket, pos.sl, new_sl)
+        else:
+            self._trail_retry_after[pos.ticket] = time.time() + BE_RETRY_SECONDS
+            err = result.retcode if result else mt5.last_error()
+            logger.warning("%s trail failed: %s ticket=%s err=%s (retry in %ss)",
+                           self.label, pos.symbol, pos.ticket, err, BE_RETRY_SECONDS)
+
     def breakeven(self, pos, trigger):
         """
-        Once price reaches `trigger`, move SL to entry ± round-trip commission so a
-        break-even exit really nets ~$0. Skipped while the new SL would sit inside
-        the broker's stops/freeze level; a rejected modify is retried after 60 s.
+        Once price reaches `trigger`, close `partial_pct` % of the position (if set)
+        and move SL to entry ± round-trip commission so a break-even exit really nets
+        ~$0. Skipped while the new SL would sit inside the broker's stops/freeze
+        level; a rejected modify is retried after 60 s.
         """
         entry, sl, tp = pos.price_open, pos.sl, pos.tp
         if trigger is None or tp == 0 or sl == 0:
@@ -514,6 +626,9 @@ class Bot:
 
         if (is_buy and sl >= new_sl) or (not is_buy and sl <= new_sl):
             return   # already at (or past) break-even
+
+        # Bank part of the profit at the moment the SL goes to break-even
+        self._partial_close(pos, info, tick)
 
         # SL must sit on the losing side of price, outside the stops/freeze level
         min_dist = max(info.trade_stops_level, info.trade_freeze_level, 1) * info.point
@@ -654,10 +769,10 @@ class Bot:
 
     def _process(self, symbol, check, be_trigger):
         """One symbol: break-even, then the HTF-first entry scan. Caller holds MT5_LOCK."""
-        # 1. Break-even — runs even while stopped, so open trades are managed
+        # 1. Break-even, partial close, trailing — runs even while stopped
         try:
             for pos in self.open_positions(symbol):
-                self.breakeven(pos, be_trigger(pos))
+                self.manage(pos, be_trigger(pos))
         except Exception:
             logger.exception("%s breakeven check failed for %s", self.label, symbol)
 

@@ -30,6 +30,12 @@ Strategies (key → rule, the timeframe it is usually shown on):
             only in the direction of EMA 200                                   H1
   ichimoku  Tenkan crosses Kijun with price above (BUY) / below (SELL) the cloud H4
 
+Exit variants — same signal as the original, different trade management, so the
+dashboard shows which exit makes more:
+  donchian_pt    Donchian breakout: at 1R close 50 % and move SL to break-even, then
+                 trail the rest 2R behind price; TP at 10R (effectively none)
+  supertrend_pt  Supertrend flip, managed the same way
+
 Settings (env vars, per bot — KEY is the upper-case key, e.g. IND_EMA2050_ENABLED):
   IND_ALL_ENABLED            true → start every indicator bot trading on boot
   IND_<KEY>_ENABLED          true/false (default false, unless IND_ALL_ENABLED)
@@ -37,7 +43,12 @@ Settings (env vars, per bot — KEY is the upper-case key, e.g. IND_EMA2050_ENAB
   IND_<KEY>_TFS              comma list of H4 / H1 / M30 / M15 (default all four)
   IND_<KEY>_LOT              (default 0.01; only when BOTS_RISK_PCT=0)
   IND_<KEY>_SL_ATR           SL distance in ATR(14) (default 1.5)
-  IND_<KEY>_RR               TP = RR × SL distance (default 2.0)
+  IND_<KEY>_RR               TP = RR × SL distance (default 2.0; variants 10)
+  IND_<KEY>_BE_R             move SL to break-even once price is this many R in profit
+                             (default 0 = off; variants 1.0)
+  IND_<KEY>_PARTIAL_PCT      % closed at that moment (default 0; variants 50)
+  IND_<KEY>_TRAIL_R          after break-even, trail the SL this × the initial risk
+                             behind price (default 0 = off; variants 2.0)
   IND_<KEY>_MAGIC_BASE       (default 800000 + 1000 × bot number)
   IND_<KEY>_MAX_SIGNAL_AGE   seconds after the candle close (default 300)
   IND_<KEY>_MIN_SL_SPREADS   (default 3)   IND_<KEY>_POLL_INTERVAL (default 5)
@@ -248,6 +259,9 @@ def sig_ichimoku(o, h, l, c):
 
 
 # key, title, comment prefix, default TF, signal, description
+# Defaults of the exit variants (each still overridable with IND_<KEY>_*)
+TRAIL_DEFAULTS = {"RR": "10", "BE_R": "1.0", "PARTIAL_PCT": "50", "TRAIL_R": "2.0"}
+
 SPECS = [
     ("ema2050",    "EMA 20/50 cross",       "E2050 ", "H1",  sig_ema2050,
      "EMA 20 crosses EMA 50."),
@@ -269,6 +283,13 @@ SPECS = [
      "%K crosses %D below 20 (buy) / above 80 (sell), with the EMA 200 trend."),
     ("ichimoku",   "Ichimoku TK cross",     "ICH ",   "H4",  sig_ichimoku,
      "Tenkan crosses Kijun with price above (buy) / below (sell) the cloud."),
+    # Exit variants: the same signals, managed to let winners run
+    ("donchian_pt",   "Donchian + trail",   "DCT ",   "H4",  sig_donchian,
+     "Donchian breakout; at 1R close half and move SL to break-even, then trail 2R behind.",
+     TRAIL_DEFAULTS),
+    ("supertrend_pt", "Supertrend + trail", "STT ",   "H1",  sig_supertrend,
+     "Supertrend flip; at 1R close half and move SL to break-even, then trail 2R behind.",
+     TRAIL_DEFAULTS),
 ]
 
 
@@ -277,15 +298,30 @@ SPECS = [
 # ---------------------------------------------------------------------------
 
 class IndicatorBot:
-    def __init__(self, number, key, title, prefix, usual_tf, signal, description):
+    def __init__(self, number, key, title, prefix, usual_tf, signal, description, defaults=None):
         self.key, self.signal = key, signal
+        self.defaults = defaults or {}
         self.default_magic = 800000 + 1000 * number
+        tail = (" H4–M15, SL 1.5 × ATR." if defaults
+                else " H4–M15, SL 1.5 × ATR, TP 1:2 unless changed.")
         self.bot = Bot(name=key, label=key.upper(), prefix=prefix, title=title,
-                       description=description + " H4–M15, SL 1.5 × ATR, TP 1:2 unless changed.")
+                       description=description + tail)
         self._last_bar = {}          # (symbol, tf) -> open time of the last candle evaluated
 
     def env(self, name, default):
-        return os.environ.get(f"IND_{self.key.upper()}_{name}", default)
+        return os.environ.get(f"IND_{self.key.upper()}_{name}", self.defaults.get(name, default))
+
+    def be_trigger(self, pos):
+        """Break-even once price is BE_R × the initial risk in profit (None = off)."""
+        be_r = self.bot.settings["be_r"]
+        if be_r <= 0:
+            return None
+        row = self.bot._journal(pos.ticket)
+        if not row or not row["sl_initial"]:
+            return None
+        risk = abs(pos.price_open - row["sl_initial"])
+        return pos.price_open + be_r * risk if pos.type == mt5.POSITION_TYPE_BUY \
+            else pos.price_open - be_r * risk
 
     def check(self, symbol, tf_name, running):
         s = self.bot.settings
@@ -352,9 +388,12 @@ class IndicatorBot:
             "rr":             float(self.env("RR", "2.0")),
             "min_rr":         0.0,
             "min_sl_spreads": float(self.env("MIN_SL_SPREADS", "3")),
+            "be_r":           float(self.env("BE_R", "0")),
+            "partial_pct":    float(self.env("PARTIAL_PCT", "0")),
+            "trail_r":        float(self.env("TRAIL_R", "0")),
         })
         enabled = self.env("ENABLED", "true" if all_on else "false").lower() == "true"
-        self.bot.start(self.check, lambda pos: None, enabled_by_default=enabled)
+        self.bot.start(self.check, self.be_trigger, enabled_by_default=enabled)
 
 
 BOTS = [IndicatorBot(i + 1, *spec) for i, spec in enumerate(SPECS)]

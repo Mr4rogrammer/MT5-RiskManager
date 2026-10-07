@@ -16,6 +16,7 @@ Same idea as crt_bot.py, but the entry happens INSIDE C2 instead of at C3's open
        CRT2_BE_TRIGGER (default 45 %) into C1's range, measured from the swept side:
          BUY  trigger = C1.low  + 45 % × C1 range
          SELL trigger = C1.high − 45 % × C1 range
+       and at that moment CRT2_PARTIAL_PCT (default 50 %) of the position is closed
 
 Specific to this bot:
   • Fresh cross only — the cross over C2.open must be seen between two polls no more
@@ -40,6 +41,9 @@ Settings (env vars):
   CRT2_SL_BUFFER_SPREADS  extra SL room beyond the sweep, × spread (default 0)
   CRT2_MIN_SL_SPREADS     minimum SL distance, × spread (default 3, 0 disables)
   CRT2_BE_TRIGGER         fraction into C1's range that triggers break-even (default 0.45)
+  CRT2_PARTIAL_PCT        % of the position closed when break-even triggers (default 50, 0 = off)
+  CRT2_TRAIL_R            after break-even, trail the SL this × the initial risk behind price
+                          (default 0 = off; the TP stays at C1's far side)
 """
 
 import os
@@ -195,6 +199,8 @@ def start_candle_two_bot():
         "sl_buffer_spreads": float(os.environ.get("CRT2_SL_BUFFER_SPREADS", "0")),
         "min_sl_spreads":    float(os.environ.get("CRT2_MIN_SL_SPREADS", "3")),
         "be_trigger":        float(os.environ.get("CRT2_BE_TRIGGER", "0.45")),
+        "partial_pct":       float(os.environ.get("CRT2_PARTIAL_PCT", "50")),
+        "trail_r":           float(os.environ.get("CRT2_TRAIL_R", "0")),
     })
     BOT.start(_check, _be_trigger,
               enabled_by_default=os.environ.get("CRT2_ENABLED", "false").lower() == "true")

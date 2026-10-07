@@ -46,6 +46,8 @@ Settings (env vars):
   DSW_SL_BUFFER_SPREADS  extra SL room beyond today's extreme, × spread (default 0)
   DSW_MIN_SL_SPREADS     minimum SL distance, × spread (default 3, 0 disables)
   DSW_BE_TRIGGER         fraction of entry→TP that triggers break-even (default 0 = off)
+  DSW_PARTIAL_PCT        % closed when break-even triggers (default 0; needs DSW_BE_TRIGGER)
+  DSW_TRAIL_R            after break-even, trail the SL this × initial risk (default 0 = off)
 """
 
 import os
@@ -198,6 +200,8 @@ def start_daily_sweep_bot():
         "sl_buffer_spreads": float(os.environ.get("DSW_SL_BUFFER_SPREADS", "0")),
         "min_sl_spreads":    float(os.environ.get("DSW_MIN_SL_SPREADS", "3")),
         "be_trigger":        float(os.environ.get("DSW_BE_TRIGGER", "0")),
+        "partial_pct":       float(os.environ.get("DSW_PARTIAL_PCT", "0")),
+        "trail_r":           float(os.environ.get("DSW_TRAIL_R", "0")),
     })
     BOT.start(_check, _be_trigger,
               enabled_by_default=os.environ.get("DSW_ENABLED", "false").lower() == "true")

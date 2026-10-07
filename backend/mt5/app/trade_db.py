@@ -356,6 +356,16 @@ def trade_breakeven(ticket, new_sl):
            (new_sl, int(time.time()), ticket))
 
 
+def trade_info(ticket):
+    """Entry, initial SL and opened volume of a journaled trade (dict), or None."""
+    if _conn is None:
+        return None
+    with _lock:
+        row = _conn.execute("SELECT entry_price, sl_initial, volume FROM trades WHERE ticket = ?",
+                            (ticket,)).fetchone()
+    return dict(row) if row else None
+
+
 def set_meta(key, value):
     """Store a dashboard value in meta; only writes (and dirties the snapshot) on a change."""
     if _conn is None:
@@ -434,6 +444,8 @@ def _exit_reason(row, last_out, exit_price):
         if entry and sl0 and sl0 != entry:
             direction = 1 if row["side"] == "BUY" else -1
             r_price = direction * (exit_price - entry) / abs(entry - sl0)
+            if r_price >= 0.3:
+                return "trail"          # an SL this far in profit was trailed there
             if r_price >= -0.1:
                 return "breakeven"
         return "sl"
@@ -467,7 +479,8 @@ def _complete_from_history(row):
     entry = next((d for d in deals if d.entry == mt5.DEAL_ENTRY_IN), None)
     entry_price = entry.price if entry else row["entry_price"]
     opened_at   = entry.time if entry else row["opened_at"]
-    reason = _exit_reason(dict(row, entry_price=entry_price), last_out, exit_price)
+    # Classify by the LAST fill: the average includes any partial close taken earlier
+    reason = _exit_reason(dict(row, entry_price=entry_price), last_out, last_out.price)
 
     _write(
         "UPDATE trades SET status = 'closed', closed_at = ?, exit_price = ?, exit_reason = ?,"
