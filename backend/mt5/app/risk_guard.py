@@ -253,7 +253,10 @@ def _publish_live(closed, floating):
         return
     state["live_at"] = now
     live = _open_pnl(_bot_magics())
+    account = mt5.account_info()      # balance: the dashboard shows drawdown as % of it
     payload = {
+        "balance": round(account.balance, 2) if account else None,
+        "equity": round(account.equity, 2) if account else None,
         "net": round(closed + floating, 2), "closed": round(closed, 2),
         "floating": round(floating, 2), "open_total": round(sum(live.values()), 2),
         "open": {str(k): v for k, v in live.items()},

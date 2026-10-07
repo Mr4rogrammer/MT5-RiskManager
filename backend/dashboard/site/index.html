@@ -132,6 +132,7 @@
   .bot-stats { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
   .bot-stats .label { color: var(--text-secondary); font-size: 12px; }
   .bot-stats .value { font-size: 16px; font-weight: 600; margin-top: 2px; white-space: nowrap; }
+  .dd-stats { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); margin-bottom: 12px; }
   .spark { margin: 10px 0 2px; height: 40px; }
   .spark svg { display: block; width: 100%; height: 40px; }
   .spark .muted { font-size: 12px; line-height: 40px; }
@@ -548,6 +549,7 @@
     content.appendChild(renderTop(s, open));
     content.appendChild(renderLimits());
     content.appendChild(el("div", { class: "full" }, [renderLeaderboard(closed, open, bots)]));
+    content.appendChild(el("div", { class: "full" }, [renderDrawdown(closed, open, since)]));
     content.appendChild(renderBots(closed, open, bots));
     content.appendChild(el("div", { class: "full" }, [renderEquity(closed, bots, since)]));
     content.appendChild(el("div", { class: "grid2" }, [renderReasons(closed, bots), renderFunnel(events, bots)]));
@@ -582,7 +584,12 @@
         if (res.status === 401) { location.reload(); return null; }
         return res.ok ? res.json() : null;
       })
-      .then(function (j) { if (j) { live = j; patchLive(); } })
+      .then(function (j) {
+        if (!j) return;
+        var first = !live;
+        live = j;
+        if (first && data) render(); else patchLive();   // first data: draw the live equity point
+      })
       .catch(function () { /* keep the last values; the "as of" time shows they're old */ });
   }
 
@@ -984,6 +991,204 @@
 
   function miniStat(label, value, cls) {
     return el("div", {}, [el("div", { class: "label", text: label }), el("div", { class: "value " + (cls || ""), text: value })]);
+  }
+
+  // ---- Equity & drawdown: all selected trades together -----------------
+  // Top: running net (closed trades, plus open trades' running P/L at "now") and its
+  // running peak; the gap between them is shaded. Bottom: the drop from that peak.
+  function renderDrawdown(closed, open, since) {
+    var card = el("div", { class: "card" }, [
+      el("h2", { text: "Equity & drawdown" }),
+      el("p", { class: "sub", text: "Running net of the selected trades and how far it fell from its high. " +
+        "The last point includes open trades' running P/L." })
+    ]);
+    if (!closed.length && !open.length) {
+      card.appendChild(el("div", { class: "notice", text: "No trades in this range." }));
+      return card;
+    }
+
+    var cur = liveOpen(), now = Date.now() / 1000;
+    var x0 = since || (closed.length ? closed[0].closed_utc : now - 3600);
+    var pts = [], total = 0, peak = 0, peakAt = x0;
+    function add(x, y, t) {
+      if (y >= peak) { peak = y; peakAt = x; }
+      pts.push({ x: x, y: y, peak: peak, dd: y - peak, peakAt: peakAt, t: t });
+    }
+    closed.forEach(function (t) { total += t.net || 0; add(t.closed_utc, total, t); });
+    var floating = 0, hasLive = false;
+    open.forEach(function (t) { var v = runningPnl(t, cur); if (v !== null) { floating += v; hasLive = true; } });
+    if (hasLive) add(now, total + floating, null);
+    if (!pts.length) {
+      card.appendChild(el("div", { class: "notice", text: "No closed trades in this range." }));
+      return card;
+    }
+    var x1 = Math.max(pts[pts.length - 1].x, now);
+    if (x1 <= x0) x1 = x0 + 3600;
+
+    // Drawdown episodes: from a high, down to the low, back to (or above) the high
+    var episodes = [], ep = null;
+    pts.forEach(function (p) {
+      if (p.dd < 0) {
+        if (!ep) ep = { start: p.peakAt, low: p.dd, lowAt: p.x, end: null };
+        if (p.dd < ep.low) { ep.low = p.dd; ep.lowAt = p.x; }
+      } else if (ep) { ep.end = p.x; episodes.push(ep); ep = null; }
+    });
+    if (ep) episodes.push(ep);
+    var worst = episodes.slice().sort(function (a, b) { return a.low - b.low; });
+    var maxDd = worst.length ? worst[0] : null;
+    var last = pts[pts.length - 1];
+    var longest = episodes.reduce(function (m, e) { return Math.max(m, (e.end || now) - e.start); }, 0);
+    var balance = cur && cur.balance ? cur.balance : null;
+    function ddPct(v) { return balance ? " (" + (v / balance * 100).toFixed(2) + "%)" : ""; }
+    function dur(sec) {
+      if (sec <= 0) return "—";
+      var d = Math.floor(sec / 86400), h = Math.floor(sec % 86400 / 3600);
+      return d ? d + "d " + h + "h" : h ? h + "h " + Math.floor(sec % 3600 / 60) + "m" : Math.max(1, Math.round(sec / 60)) + "m";
+    }
+
+    card.appendChild(el("div", { class: "bot-stats dd-stats" }, [
+      miniStat("Max drawdown", maxDd ? money(maxDd.low) + ddPct(maxDd.low) : "—", maxDd ? "neg" : ""),
+      miniStat("Now from high", last.dd < 0 ? money(last.dd) + ddPct(last.dd) : "At high", last.dd < 0 ? "neg" : "pos"),
+      miniStat("High", money(peak), signClass(peak)),
+      miniStat("Longest underwater", dur(longest))
+    ]));
+    if (balance) card.appendChild(el("p", { class: "sub", style: "margin-top:8px",
+      text: "% = share of the current balance (" + balance.toLocaleString(undefined, { maximumFractionDigits: 2 }) + ")" }));
+
+    var chart = el("div", { class: "chart" });
+    card.appendChild(chart);
+
+    function draw() {
+      chart.textContent = "";
+      var W = Math.max(chart.clientWidth, 280), H1 = 220, H2 = 120, gap = 30;
+      var m = { l: 56, r: 16, t: 10, b: 28 };
+      var pw = W - m.l - m.r, top1 = m.t, top2 = m.t + H1 + gap, H = top2 + H2 + m.b;
+      function X(x) { return m.l + (x - x0) / (x1 - x0) * pw; }
+
+      var eqTicks = niceTicks(Math.min.apply(null, [0].concat(pts.map(function (p) { return p.y; }))),
+                              Math.max.apply(null, [0].concat(pts.map(function (p) { return p.peak; }))), 5);
+      var e0 = eqTicks[0], e1 = eqTicks[eqTicks.length - 1];
+      function YE(y) { return top1 + (1 - (y - e0) / (e1 - e0 || 1)) * H1; }
+      var ddTicks = niceTicks(Math.min(maxDd ? maxDd.low : -1, -1e-9), 0, 3);
+      var d0 = ddTicks[0];
+      function YD(y) { return top2 + (y / (d0 || -1)) * H2; }
+
+      var root = svg("svg", { viewBox: "0 0 " + W + " " + H, role: "img",
+        "aria-label": "Equity and drawdown. Max drawdown " + (maxDd ? money(maxDd.low) : "none") +
+          ", now " + money(last.dd) + " from the high." });
+
+      function grid(ticks, Y, digits) {
+        ticks.forEach(function (v) {
+          root.appendChild(svg("line", { x1: m.l, x2: m.l + pw, y1: Y(v), y2: Y(v),
+            style: "stroke:" + (v === 0 ? "var(--baseline)" : "var(--grid)") + ";stroke-width:1" }));
+          root.appendChild(svg("text", { x: m.l - 8, y: Y(v) + 4, "text-anchor": "end", class: "tick", text: signed(v, digits) }));
+        });
+      }
+      grid(eqTicks, YE, Math.abs(e1 - e0) < 10 ? 2 : 0);
+      grid(ddTicks, YD, Math.abs(d0) < 10 ? 2 : 0);
+      root.appendChild(svg("text", { x: m.l, y: top2 - 8, class: "tick", text: "Drawdown from high" }));
+      timeTicks(x0, x1, Math.max(2, Math.floor(pw / 110))).forEach(function (tx) {
+        root.appendChild(svg("text", { x: X(tx), y: H - 8, "text-anchor": "middle", class: "tick",
+          text: new Date(tx * 1000).toLocaleDateString(undefined, { month: "short", day: "numeric" }) }));
+      });
+
+      // Step vertices (value holds until the next trade closes)
+      function steps(key) {
+        var v = [[x0, 0]], prev = 0;
+        pts.forEach(function (p) { v.push([p.x, prev]); v.push([p.x, p[key]]); prev = p[key]; });
+        v.push([x1, prev]);
+        return v;
+      }
+      function line(v, Y) { return v.map(function (q, i) { return (i ? "L" : "M") + X(q[0]) + "," + Y(q[1]); }).join(" "); }
+      var eqV = steps("y"), pkV = steps("peak"), ddV = steps("dd");
+
+      // Shaded gap between the high and the equity line
+      root.appendChild(svg("path", { d: line(pkV, YE) + " " + eqV.slice().reverse().map(function (q) {
+        return "L" + X(q[0]) + "," + YE(q[1]); }).join(" ") + " Z",
+        style: "fill:var(--bad-text);fill-opacity:.14;stroke:none" }));
+      root.appendChild(svg("path", { d: line(pkV, YE),
+        style: "fill:none;stroke:var(--text-muted);stroke-width:1;stroke-dasharray:3 3" }));
+      root.appendChild(svg("path", { d: line(eqV, YE),
+        style: "fill:none;stroke:var(--series-1);stroke-width:2;stroke-linejoin:round;stroke-linecap:round" }));
+
+      // Underwater area
+      root.appendChild(svg("path", { d: line(ddV, YD) + " L" + X(x1) + "," + YD(0) + " L" + X(x0) + "," + YD(0) + " Z",
+        style: "fill:var(--bad-text);fill-opacity:.22;stroke:none" }));
+      root.appendChild(svg("path", { d: line(ddV, YD),
+        style: "fill:none;stroke:var(--bad-text);stroke-width:1.5;stroke-linejoin:round" }));
+      if (maxDd) {
+        var mx = X(maxDd.lowAt), my = YD(maxDd.low);
+        root.appendChild(svg("circle", { cx: mx, cy: my, r: 4, style: "fill:var(--bad-text);stroke:var(--surface-1);stroke-width:2" }));
+        var right = mx < m.l + pw - 120;
+        root.appendChild(svg("text", { x: mx + (right ? 8 : -8), y: Math.min(my + 4, top2 + H2 - 2),
+          "text-anchor": right ? "start" : "end", class: "endlabel", text: "Max " + money(maxDd.low) }));
+      }
+
+      // Crosshair + tooltip over both panels: snaps to the nearest point
+      var cross = svg("line", { y1: top1, y2: top2 + H2, style: "stroke:var(--text-muted);stroke-width:1;display:none" });
+      root.appendChild(cross);
+      var dotE = svg("circle", { r: 4, style: "fill:var(--series-1);stroke:var(--surface-1);stroke-width:2;display:none" });
+      var dotD = svg("circle", { r: 4, style: "fill:var(--bad-text);stroke:var(--surface-1);stroke-width:2;display:none" });
+      root.appendChild(dotE); root.appendChild(dotD);
+      var overlay = svg("rect", { x: m.l, y: top1, width: pw, height: top2 + H2 - top1, class: "overlay", tabindex: 0,
+        "aria-label": "Equity crosshair. Use left and right arrow keys to step through trades." });
+      root.appendChild(overlay);
+      var idx = -1;
+
+      function show(i, clientX, clientY) {
+        idx = Math.max(0, Math.min(pts.length - 1, i));
+        var p = pts[idx], px = X(p.x);
+        cross.setAttribute("x1", px); cross.setAttribute("x2", px); cross.style.display = "";
+        dotE.setAttribute("cx", px); dotE.setAttribute("cy", YE(p.y)); dotE.style.display = "";
+        dotD.setAttribute("cx", px); dotD.setAttribute("cy", YD(p.dd)); dotD.style.display = "";
+        tooltip.textContent = "";
+        tooltip.appendChild(el("div", { class: "tt-title", text: p.t ? new Date(p.x * 1000).toLocaleString() : "Now, with open trades" }));
+        tooltip.appendChild(el("div", { class: "tt-row" }, [el("i", { class: "key-line", style: "background:var(--series-1)" }),
+          el("strong", { text: money(p.y) }), el("span", { class: "name", text: "Equity" })]));
+        tooltip.appendChild(el("div", { class: "tt-row" }, [el("i", { class: "key-line", style: "background:var(--bad-text)" }),
+          el("strong", { text: p.dd < 0 ? money(p.dd) + ddPct(p.dd) : "At high" }), el("span", { class: "name", text: "From high" })]));
+        if (p.t) tooltip.appendChild(el("div", { class: "tt-title", style: "margin:6px 0 0",
+          text: botName(p.t.bot) + ": " + p.t.symbol + " " + p.t.timeframe + " " + p.t.side + " · " + (p.t.exit_reason || "") + " · " + money(p.t.net) }));
+        placeTooltip(clientX, clientY);
+      }
+      function hide() {
+        cross.style.display = dotE.style.display = dotD.style.display = "none";
+        tooltip.style.display = "none";
+      }
+      overlay.addEventListener("pointermove", function (e) {
+        var rect = root.getBoundingClientRect();
+        var xv = x0 + ((e.clientX - rect.left) * (W / rect.width) - m.l) / pw * (x1 - x0);
+        var best = 0;
+        for (var i = 1; i < pts.length; i++) if (Math.abs(pts[i].x - xv) < Math.abs(pts[best].x - xv)) best = i;
+        show(best, e.clientX, e.clientY);
+      });
+      overlay.addEventListener("pointerleave", hide);
+      overlay.addEventListener("blur", hide);
+      overlay.addEventListener("keydown", function (e) {
+        if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+        e.preventDefault();
+        var next = Math.max(0, Math.min(pts.length - 1, idx < 0 ? pts.length - 1 : idx + (e.key === "ArrowRight" ? 1 : -1)));
+        var r = overlay.getBoundingClientRect();
+        show(next, r.left + (X(pts[next].x) - m.l) / pw * r.width, r.top + 20);
+      });
+
+      chart.appendChild(root);
+    }
+    afterMount.push(function () { draw(); watchResize(chart, draw); });
+
+    // Table twin: the deepest drawdowns
+    function at(sec) { return new Date(sec * 1000).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }); }
+    card.appendChild(el("details", {}, [
+      el("summary", { text: "Show as table (deepest drawdowns)" }),
+      worst.length ? tableEl(["From high", "Low", "Depth", "Back at high", "Lasted"],
+        worst.slice(0, 10).map(function (e) {
+          return [{ text: at(e.start) }, { text: at(e.lowAt) },
+            { text: money(e.low) + ddPct(e.low), cls: "num neg" },
+            { text: e.end ? at(e.end) : "Not yet", cls: e.end ? "" : "muted" },
+            { text: dur((e.end || now) - e.start), cls: "num" }];
+        }), [0, 0, 1, 0, 1]) : el("div", { class: "notice", text: "No drawdown in this range." })
+    ]));
+    return card;
   }
 
   // ---- Equity curve: cumulative net per bot (step line) ---------------
