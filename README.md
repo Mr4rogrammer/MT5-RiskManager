@@ -159,6 +159,7 @@ docker compose up -d --build --force-recreate
 | 3000 | MT5 VNC Web UI  |
 | 5001 | MT5 Flask API   |
 | 8080 | Bot dashboard   |
+| 443 / 80 | Bot dashboard over HTTPS (Caddy, `DASHBOARD_DOMAIN`) |
 
 ## API Documentation
 
@@ -714,6 +715,20 @@ Set the login in `.env`. The container refuses to start without it:
 DASHBOARD_USER=admin
 DASHBOARD_PASSWORD=a-long-password
 ```
+
+### HTTPS on your own domain
+
+The `caddy` container serves the dashboard at `https://<DASHBOARD_DOMAIN>` with a free Let's
+Encrypt certificate (issued on first start, renewed automatically). HTTPS on port 443 also
+works from office networks that block port 8080 or plain `http://` to an IP, and it
+encrypts the dashboard password.
+
+1. At your domain's DNS provider, add an **A record**: `bots` → the server's IP.
+2. Open ports **80** and **443** on the server's firewall (80 is needed for the certificate).
+3. Set `DASHBOARD_DOMAIN=bots.mrejp.tech` in `.env` and run `docker compose up -d`.
+
+Check with `docker logs caddy` ("certificate obtained successfully"). Once HTTPS works you
+can close port 8080 to the internet.
 
 ## License
 

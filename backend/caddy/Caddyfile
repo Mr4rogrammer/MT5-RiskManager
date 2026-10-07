@@ -1,0 +1,16 @@
+# HTTPS in front of the bot dashboard.
+#
+# DASHBOARD_DOMAIN (in .env) is the public name, e.g. bots.mrejp.tech. Its DNS A record
+# must point at this server and ports 80 + 443 must be open: Caddy then gets a free
+# Let's Encrypt certificate on first start and renews it by itself.
+# The dashboard's own login (DASHBOARD_USER / DASHBOARD_PASSWORD) still applies.
+{$DASHBOARD_DOMAIN:localhost} {
+	reverse_proxy dashboard:80
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+}

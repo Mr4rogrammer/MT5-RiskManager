@@ -28,3 +28,25 @@ services:
       - ./config/control:/botcontrol   # start/stop files written by the page, read by the bots
     ports:
       - 8080:80
+
+  # HTTPS for the dashboard on your own domain (DASHBOARD_DOMAIN in .env, e.g.
+  # bots.mrejp.tech). Free Let's Encrypt certificate, renewed automatically.
+  caddy:
+    image: caddy:2-alpine
+    container_name: caddy
+    restart: unless-stopped
+    depends_on:
+      - dashboard
+    environment:
+      DASHBOARD_DOMAIN: ${DASHBOARD_DOMAIN:-localhost}
+    volumes:
+      - ./backend/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data         # certificates — keep, or Let's Encrypt rate limits apply
+      - caddy_config:/config
+    ports:
+      - 80:80
+      - 443:443
+
+volumes:
+  caddy_data:
+  caddy_config:
