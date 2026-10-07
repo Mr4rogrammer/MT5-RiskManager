@@ -349,6 +349,16 @@ def trade_breakeven(ticket, new_sl):
            (new_sl, int(time.time()), ticket))
 
 
+def set_meta(key, value):
+    """Store a dashboard value in meta; only writes (and dirties the snapshot) on a change."""
+    if _conn is None:
+        return
+    with _lock:
+        row = _conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+    if row is None or row["value"] != value:
+        _write("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, value))
+
+
 def set_exit_hint(ticket, hint):
     _write("UPDATE trades SET exit_hint = ? WHERE ticket = ?", (hint, ticket))
 

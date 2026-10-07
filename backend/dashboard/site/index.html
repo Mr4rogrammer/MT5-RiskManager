@@ -112,6 +112,17 @@
   .bot-head .state { margin-left: auto; font-size: 12px; color: var(--text-secondary); }
   .bot-head .state.on { color: var(--good-text); }
   .bot-head .control { padding: 3px 10px; font-size: 12px; }
+  .limits { margin-bottom: 12px; }
+  .limits form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px 16px; }
+  .limits label { display: flex; flex-direction: column; gap: 4px; color: var(--text-secondary); font-size: 12px; }
+  .limits input {
+    font: inherit; color: var(--text-primary); background: var(--surface-1); width: 140px;
+    border: 1px solid var(--border); border-radius: 6px; padding: 5px 8px;
+  }
+  .limits input:focus-visible { outline: 2px solid var(--series-1); outline-offset: 2px; }
+  .limits .status { margin: 0 0 12px; font-size: 13px; }
+  .limits .status.halted { color: var(--bad-text); font-weight: 600; }
+  .limits .applied { color: var(--text-muted); font-size: 12px; margin-top: 8px; }
   .bot-head .control:disabled { opacity: 0.6; cursor: default; }
   .bot .sub { margin-top: 6px; }
   .bot-stats { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
@@ -229,7 +240,7 @@
   var TF_ORDER = ["H4", "H1", "M30", "M15"];
   var REASONS = [
     ["tp", "Take profit"], ["sl", "Stop loss"], ["breakeven", "Break-even"],
-    ["override", "Higher-TF override"], ["manual", "Manual"], ["stopout", "Stop out"], ["other", "Other"]
+    ["override", "Higher-TF override"], ["limit", "Daily loss limit"], ["manual", "Manual"], ["stopout", "Stop out"], ["other", "Other"]
   ];
 
   // ------------------------------------------------------------------
@@ -240,6 +251,8 @@
   var lastVersion = null;      // ETag / Last-Modified of the snapshot last parsed
   var lastChecked = null;      // when the page last reached the server
   var pending = {};            // bot -> { want: "run"|"stop", at } until the snapshot confirms it
+  var pendingLimits = null;    // { max_daily_loss, max_open_trades, at } until the snapshot confirms it
+  var limitDraft = {};         // what the user typed, kept across re-renders
   var pendingTimer = null;
   var filters = { days: 30, bot: "", symbol: "", tf: "" };
   var content = document.getElementById("content");
@@ -516,8 +529,11 @@
     var bots = allBots().filter(function (b) { return !filters.bot || b === filters.bot; });
     var s = summarize(closed);
 
+    // Re-rendering replaces the inputs: keep the cursor where it was
+    var focused = document.activeElement && document.activeElement.id;
     content.textContent = "";
     content.appendChild(renderTop(s, open));
+    content.appendChild(renderLimits());
     content.appendChild(el("div", { class: "full" }, [renderLeaderboard(closed, open, bots)]));
     content.appendChild(renderBots(closed, open, bots));
     content.appendChild(el("div", { class: "full" }, [renderEquity(closed, bots, since)]));
@@ -527,6 +543,7 @@
     content.appendChild(el("div", { class: "full" }, [renderOpen(open)]));
     content.appendChild(el("div", { class: "full" }, [renderRecent(closed)]));
     afterMount.splice(0).forEach(function (fn) { fn(); });
+    if (focused && document.getElementById(focused)) document.getElementById(focused).focus();
   }
   var afterMount = [];
 
@@ -611,9 +628,103 @@
   function watchPending() {
     if (pendingTimer) return;
     pendingTimer = setInterval(function () {
-      if (!Object.keys(pending).length) { clearInterval(pendingTimer); pendingTimer = null; return; }
+      if (!Object.keys(pending).length && !pendingLimits) { clearInterval(pendingTimer); pendingTimer = null; return; }
       load().then(function () { if (data) render(); });   // also expires a stale "Stopping…"
     }, 10000);
+  }
+
+  // ---- Account limits (risk_guard.py) ---------------------------------
+  // Saved to config/control/_limits; the guard applies it within seconds and
+  // writes the values it uses into meta.limits, which confirms the save here.
+  function metaJson(key) {
+    try { return data.meta[key] ? JSON.parse(data.meta[key]) : null; } catch (e) { return null; }
+  }
+
+  function renderLimits() {
+    var applied = metaJson("limits");
+    var halt = metaJson("halted_until");
+    var nowSec = Date.now() / 1000;
+    if (pendingLimits && applied && applied.max_daily_loss === pendingLimits.max_daily_loss &&
+        applied.max_open_trades === pendingLimits.max_open_trades) pendingLimits = null;
+    if (pendingLimits && Date.now() - pendingLimits.at > PENDING_MS) pendingLimits = null;
+
+    // Today = the current broker day (broker midnight), shown in real time
+    var off = data.offset || 0;
+    var dayStart = Math.floor((nowSec + off) / 86400) * 86400 - off;
+    var closedToday = 0;
+    data.trades.forEach(function (t) {
+      if (t.status === "closed" && (t.closed_utc || 0) >= dayStart) closedToday += t.net || 0;
+    });
+    var openAll = data.trades.filter(function (t) { return t.status === "open"; }).length;
+
+    var status;
+    if (halt && halt.until > nowSec) {
+      status = el("p", { class: "status halted", role: "status",
+        text: "⛔ Daily loss limit hit at " + new Date(halt.at * 1000).toLocaleTimeString() +
+              " (" + money(halt.net) + " of −" + halt.limit.toFixed(2) + "). All bot trades closed; " +
+              "trading resumes " + new Date(halt.until * 1000).toLocaleString() + "." });
+    } else {
+      var lim = applied || {};
+      status = el("p", { class: "status", role: "status",
+        text: "Today (closed): " + money(closedToday) +
+              (lim.max_daily_loss ? " of −" + lim.max_daily_loss.toFixed(2) + " limit" : "") +
+              " · Open trades: " + openAll + (lim.max_open_trades ? " of " + lim.max_open_trades : "") });
+    }
+
+    function field(id, key, labelText, step) {
+      var val = limitDraft[key] !== undefined ? limitDraft[key]
+              : pendingLimits ? String(pendingLimits[key])
+              : (applied && applied[key] !== undefined ? String(applied[key]) : "0");
+      var input = el("input", { id: id, type: "number", min: "0", step: step, value: val, inputmode: "decimal" });
+      input.addEventListener("input", function () { limitDraft[key] = this.value; });
+      return el("label", { for: id }, [document.createTextNode(labelText), input]);
+    }
+
+    var save = el("button", { type: "submit", text: pendingLimits ? "Saving…" : "Save" });
+    if (pendingLimits) save.disabled = true;
+    var form = el("form", {}, [
+      field("lim-loss", "max_daily_loss", "Max daily loss (account currency)", "1"),
+      field("lim-trades", "max_open_trades", "Max open trades", "1"),
+      save
+    ]);
+    form.addEventListener("submit", function (e) {
+      e.preventDefault();
+      var loss = parseFloat(form.querySelector("#lim-loss").value);
+      var trades = parseInt(form.querySelector("#lim-trades").value, 10);
+      if (!(loss >= 0) || !(trades >= 0)) { window.alert("Enter 0 or a positive number (0 = off)."); return; }
+      var body = { max_daily_loss: loss, max_open_trades: trades };
+      if (!window.confirm("Apply to ALL bots?\n\nMax daily loss: " + (loss ? loss.toFixed(2) : "off") +
+          "\nMax open trades: " + (trades || "off") +
+          "\n\nWhen the daily loss is reached, every bot trade is closed and no new ones open until the next broker day.")) return;
+      save.disabled = true;
+      save.textContent = "Saving…";
+      fetch(CONTROL_URL + "_limits", { method: "PUT", body: JSON.stringify(body), cache: "no-store" })
+        .then(function (res) {
+          if (!res.ok) throw new Error("HTTP " + res.status);
+          pendingLimits = { max_daily_loss: loss, max_open_trades: trades, at: Date.now() };
+          limitDraft = {};
+          watchPending();
+          render();
+        })
+        .catch(function (err) {
+          save.disabled = false;
+          save.textContent = "Save";
+          window.alert("Could not save the limits: " + err.message);
+        });
+    });
+
+    return el("div", { class: "card limits" }, [
+      el("h2", { text: "Account limits" }),
+      el("p", { class: "sub", text: "Apply to all bots together; 0 = off. The daily loss counts trades closed today " +
+        "plus the floating P/L of open ones. When it is reached, every bot trade is closed and no bot opens a " +
+        "new one until the next broker day." }),
+      status,
+      form,
+      el("div", { class: "applied", text: pendingLimits ? "Waiting for the bots to apply it (a few seconds, then the next snapshot)…"
+        : (applied ? "In use: max daily loss " + (applied.max_daily_loss ? applied.max_daily_loss.toFixed(2) : "off") +
+           " · max open trades " + (applied.max_open_trades || "off") +
+           (applied.source === "env" ? " (from .env)" : " (set here)") : "Not reported by the bots yet") })
+    ]);
   }
 
   function renderBots(closed, open, bots) {

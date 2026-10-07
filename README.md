@@ -553,6 +553,7 @@ All bot logic lives in `backend/mt5/app/`:
 | `daily_sweep_bot.py` | Daily sweep strategy only |
 | `indicator_bots.py` | The 10 indicator strategies |
 | `mt5_guard.py` | The lock that serializes MT5 calls across bot threads |
+| `risk_guard.py` | Account-wide limits for all bots: max daily loss (closes everything and pauses until the next day) and max open trades |
 
 The bots don't use the API helpers in `lib.py` or `routes/`; `routes/bot.py` only exposes
 start/stop/status.
@@ -629,6 +630,23 @@ snapshot confirms it (about 30 s).
   rebuild, even if its `*_ENABLED=true`. Delete `config/control/<bot name>` to go back to the
   `.env` setting.
 - A start is refused on a netting account, as at boot; the reason is in the bot's events.
+
+**Account limits (prop-firm rules).** The *Account limits* card sets two limits for **all bots
+together** (`risk_guard.py`). 0 = off.
+
+| Limit | What happens |
+| ----- | ------------ |
+| **Max daily loss** (account currency) | Counts every bot trade closed today plus the floating P/L of open ones, with commission and swap. When it reaches −limit, **every open bot trade is closed** and no bot opens a new one until the next broker day (broker midnight). |
+| **Max open trades** | A new trade is skipped while this many bot trades are open. A higher-TF override that replaces a trade still goes ahead. |
+
+- Checked every 2 seconds (`BOTS_GUARD_INTERVAL`). Manual trades are ignored, both in the
+  count and when closing.
+- Saved to `config/control/_limits`; the bots apply it within seconds. Until it's set on
+  the dashboard, `BOTS_MAX_DAILY_LOSS` and `BOTS_MAX_OPEN_TRADES` in `.env` apply.
+- A halt lasts until the next broker day. Raising the limit doesn't lift it; setting it to
+  0 does. After a restart the halt comes back if today's closed trades already lost the limit.
+- Skipped entries show in the skip reasons ("daily loss limit hit", "max open trades
+  reached"), and trades closed by the halt show as exit reason "Daily loss limit".
 - The `/bots/<name>/start|stop` API routes still work, and the latest action (API or
   button) wins until the button is pressed again.
 

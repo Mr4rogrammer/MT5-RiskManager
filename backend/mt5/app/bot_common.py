@@ -41,6 +41,7 @@ from datetime import datetime, timezone
 
 import MetaTrader5 as mt5
 
+import risk_guard
 import trade_db
 from mt5_guard import MT5_LOCK
 
@@ -355,6 +356,13 @@ class Bot:
                                  for p in to_close])
             return False
 
+        # Account-wide limits (risk_guard.py): daily loss halt, max open trades
+        blocked = risk_guard.entry_block(replacing=len(to_close))
+        if blocked:
+            reason, details = blocked
+            self.record(symbol, tf_name, "skipped", side=side, reason=reason, **details)
+            return False
+
         info = mt5.symbol_info(symbol)
         if info is None:
             self.record(symbol, tf_name, "error",
@@ -616,6 +624,8 @@ class Bot:
             logger.info("%s: dashboard control file says %s", self.label, want)
         if enabled_by_default:
             self.try_enable()
+
+        risk_guard.start(BOTS, CONTROL_DIR)
 
         threading.Thread(target=self._loop, args=(check, be_trigger),
                          daemon=True, name=f"{self.name}-bot").start()
