@@ -23,6 +23,12 @@ Position size is also shared by every bot:
                               0 = use each bot's fixed lot setting instead.
   BOTS_RISK_MAX_OVER          the broker's minimum lot may risk up to this × the target
                               before the trade is skipped (default 1.5)
+
+Start / stop from the dashboard:
+  BOTS_CONTROL_DIR            folder of control files, one per bot named after it
+                              (default /config/control). The dashboard writes "run" or
+                              "stop" into it; each bot reads its file on every poll, and
+                              the last choice also wins over *_ENABLED after a restart.
 """
 
 import logging
@@ -61,6 +67,9 @@ fees = {}
 
 # Position sizing settings — filled by load_fees()
 sizing = {}
+
+# Dashboard start/stop files — see Bot._apply_control
+CONTROL_DIR = os.environ.get("BOTS_CONTROL_DIR", "/config/control").rstrip("/\\")
 
 # Every Bot created, by name — used by the generic /bots routes
 BOTS = {}
@@ -239,6 +248,7 @@ class Bot:
         self._start_lock = threading.Lock()
         self._be_retry_after = {}   # ticket -> unix time
         self._account_checked = False
+        self._control_mtime = None  # mtime of the control file last applied
 
     # -- bookkeeping --------------------------------------------------------
 
@@ -539,6 +549,39 @@ class Bot:
         self.enabled.set()
         return True, None
 
+    # -- dashboard control ----------------------------------------------------
+
+    def _read_control(self):
+        """
+        "run" / "stop" if the dashboard's control file changed since the last read,
+        else None. Joined with "/" (not os.path.join) because Python runs under Wine.
+        """
+        path = f"{CONTROL_DIR}/{self.name}"
+        try:
+            mtime = os.stat(path).st_mtime_ns
+            if mtime == self._control_mtime:
+                return None
+            self._control_mtime = mtime
+            with open(path, encoding="ascii", errors="replace") as f:
+                want = f.read(16).strip().lower()
+        except OSError:
+            return None                     # no file: the dashboard never touched this bot
+        if want not in ("run", "stop"):
+            logger.warning("%s: ignoring control file %s containing %r", self.label, path, want)
+            return None
+        return want
+
+    def _apply_control(self):
+        """Start or stop new entries when the dashboard asks. Open trades are left alone."""
+        want = self._read_control()
+        if want == "stop" and self.enabled.is_set():
+            self.enabled.clear()
+            self.record("", None, "control", action="stop", source="dashboard")
+        elif want == "run" and not self.enabled.is_set():
+            ok, why = self.try_enable()
+            self.record("", None, "control", action="run", source="dashboard",
+                        **({} if ok else {"failed": why}))
+
     # -- loop ---------------------------------------------------------------
 
     def start(self, check, be_trigger, enabled_by_default):
@@ -566,6 +609,11 @@ class Bot:
                     logger.warning("%s: could not select symbol %s (check broker symbol name)",
                                    self.label, symbol)
 
+        # A start/stop from the dashboard outlives restarts and wins over *_ENABLED
+        want = self._read_control()
+        if want is not None:
+            enabled_by_default = want == "run"
+            logger.info("%s: dashboard control file says %s", self.label, want)
         if enabled_by_default:
             self.try_enable()
 
@@ -578,6 +626,7 @@ class Bot:
                     self.settings, fees)
         while True:
             try:
+                self._apply_control()
                 with MT5_LOCK:
                     if mt5.terminal_info() is None:
                         mt5.initialize()

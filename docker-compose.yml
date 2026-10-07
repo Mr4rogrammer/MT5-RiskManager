@@ -25,5 +25,6 @@ services:
       DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD}
     volumes:
       - ./config:/botconfig:ro   # only data/dashboard.db is served (see nginx.conf)
+      - ./config/control:/botcontrol   # start/stop files written by the page, read by the bots
     ports:
       - 8080:80

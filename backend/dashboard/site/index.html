@@ -111,6 +111,8 @@
   .bot-head h2 { margin: 0; }
   .bot-head .state { margin-left: auto; font-size: 12px; color: var(--text-secondary); }
   .bot-head .state.on { color: var(--good-text); }
+  .bot-head .control { padding: 3px 10px; font-size: 12px; }
+  .bot-head .control:disabled { opacity: 0.6; cursor: default; }
   .bot .sub { margin-top: 6px; }
   .bot-stats { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
   .bot-stats .label { color: var(--text-secondary); font-size: 12px; }
@@ -219,6 +221,8 @@
   // ------------------------------------------------------------------
   var DB_URL = "data/dashboard.db";
   var REFRESH_MS = 60000;
+  var CONTROL_URL = "control/";      // PUT "run" / "stop" → config/control/<bot> (see nginx.conf)
+  var PENDING_MS = 3 * 60 * 1000;    // stop waiting for a bot to confirm after this long
   // Bots come from the database's `bots` table, so a new strategy appears here
   // without changing this page. Each keeps the color slot it was given when it
   // first registered — color follows the bot, never its rank.
@@ -235,6 +239,8 @@
   var data = null;             // { trades, events (daily counts), meta, bots }
   var lastVersion = null;      // ETag / Last-Modified of the snapshot last parsed
   var lastChecked = null;      // when the page last reached the server
+  var pending = {};            // bot -> { want: "run"|"stop", at } until the snapshot confirms it
+  var pendingTimer = null;
   var filters = { days: 30, bot: "", symbol: "", tf: "" };
   var content = document.getElementById("content");
   var tooltip = document.getElementById("tooltip");
@@ -557,6 +563,59 @@
     tfs: "Timeframes", sl_atr: "SL (× ATR)", rr: "TP (× risk)", trend: "Trend filter", tp_frac: "TP fraction"
   };
 
+  // ---- Start / stop ----------------------------------------------------
+  // The page writes the bot's control file; the bot picks it up on its next poll
+  // and the change shows here once the next snapshot is written (~30 s).
+  function controlState(b) {
+    var p = pending[b], enabled = botInfo(b).enabled;
+    if (!p) return null;
+    if ((p.want === "run") === (enabled === 1) || Date.now() - p.at > PENDING_MS) {
+      delete pending[b];
+      return null;
+    }
+    return p.want === "run" ? "Starting…" : "Stopping…";
+  }
+
+  function controlButton(b) {
+    var enabled = botInfo(b).enabled;
+    if (enabled !== 0 && enabled !== 1) return null;
+    var want = enabled === 1 ? "stop" : "run";
+    var label = want === "stop" ? "Stop" : "Start";
+    var btn = el("button", { type: "button", class: "control", text: label,
+      "aria-label": label + " " + botName(b) });
+    if (pending[b]) btn.disabled = true;
+    btn.addEventListener("click", function () {
+      var msg = want === "stop"
+        ? "Stop " + botName(b) + "?\n\nIt opens no new trades. Trades already open keep running to their SL / TP (break-even still applies)."
+        : "Start " + botName(b) + "?\n\nIt will open new trades.";
+      if (!window.confirm(msg)) return;
+      btn.disabled = true;
+      btn.textContent = "Sending…";
+      fetch(CONTROL_URL + encodeURIComponent(b), { method: "PUT", body: want, cache: "no-store" })
+        .then(function (res) {
+          if (!res.ok) throw new Error("HTTP " + res.status);
+          pending[b] = { want: want, at: Date.now() };
+          watchPending();
+          render();
+        })
+        .catch(function (err) {
+          btn.disabled = false;
+          btn.textContent = label;
+          window.alert("Could not " + label.toLowerCase() + " " + botName(b) + ": " + err.message);
+        });
+    });
+    return btn;
+  }
+
+  // Refresh every 10 s while a start/stop is waiting for confirmation
+  function watchPending() {
+    if (pendingTimer) return;
+    pendingTimer = setInterval(function () {
+      if (!Object.keys(pending).length) { clearInterval(pendingTimer); pendingTimer = null; return; }
+      load().then(function () { if (data) render(); });   // also expires a stale "Stopping…"
+    }, 10000);
+  }
+
   function renderBots(closed, open, bots) {
     var wrap = el("div", { class: "bots" });
     bots.forEach(function (b) {
@@ -564,6 +623,7 @@
       var info = botInfo(b), st = summarize(mine);
       var nOpen = open.filter(function (t) { return t.bot === b; }).length;
       var state = info.enabled === 1 ? "Running" : (info.enabled === 0 ? "Stopped" : "Unknown");
+      var waiting = controlState(b);
       var settings = info.settings || {};
 
       var dl = el("dl", { class: "settings" });
@@ -582,7 +642,9 @@
         el("div", { class: "bot-head" }, [
           el("i", { class: "key-rect", style: "background:" + botColor(b) }),
           el("h2", { text: botName(b) }),
-          el("span", { class: "state " + (info.enabled === 1 ? "on" : "off"), text: (info.enabled === 1 ? "● " : "○ ") + state })
+          el("span", { class: "state " + (waiting ? "off" : (info.enabled === 1 ? "on" : "off")), role: "status",
+            text: waiting || ((info.enabled === 1 ? "● " : "○ ") + state) }),
+          controlButton(b)
         ]),
         info.description ? el("p", { class: "sub", text: info.description }) : null,
         el("div", { class: "bot-stats" }, [

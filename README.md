@@ -456,6 +456,7 @@ Generic routes work for every bot, including future ones:
 | POST | `/bots/<name>/stop` | Stop new entries (open trades keep SL/TP, break-even still runs) |
 
 Bot names: `crt3`, `crt2`, `dsweep`. The older `/bot/*` and `/bot2/*` routes still work.
+The easier way is the **Start / Stop** button on each bot's card in the dashboard (see below).
 
 ## Backtesting
 
@@ -605,7 +606,8 @@ detail. It grows by roughly 60 MB a year, almost all of it raw events.
 `http://your-server-ip:8080` shows, for any date range, bot, symbol and timeframe:
 
 - net P/L, win rate (break-even excluded), average R, profit factor, open trades
-- one card per bot: description, running/stopped, headline stats, settings
+- one card per bot: description, running/stopped with a **Start / Stop button**, headline
+  stats, settings
 - cumulative net profit per bot over time (hover for values; also as a table)
 - how trades closed (TP / SL / break-even / override) per bot
 - signals vs trades taken, and the most common reasons setups were skipped
@@ -615,6 +617,20 @@ detail. It grows by roughly 60 MB a year, almost all of it raw events.
 the read-only `dashboard.db` snapshot. The page loads the database into the browser with
 sql.js and runs the queries there. Only that one file is reachable; the rest of `./config`
 is mounted read-only and not served.
+
+**Start / Stop.** The button writes `run` or `stop` into `config/control/<bot name>` (nginx
+`PUT`, same login as the page; the only folder it can write to). Each bot reads its file on
+every poll, so it reacts within seconds, and the card shows "Stopping…" until the next
+snapshot confirms it (about 30 s).
+
+- **Stop** = no new trades. Trades already open keep running to their SL / TP, and
+  break-even still applies. To close them, close them in MT5.
+- **The choice survives restarts**: a bot stopped from the dashboard stays stopped after a
+  rebuild, even if its `*_ENABLED=true`. Delete `config/control/<bot name>` to go back to the
+  `.env` setting.
+- A start is refused on a netting account, as at boot; the reason is in the bot's events.
+- The `/bots/<name>/start|stop` API routes still work, and the latest action (API or
+  button) wins until the button is pressed again.
 
 **Data transferred:**
 
