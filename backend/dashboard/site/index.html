@@ -563,19 +563,42 @@
     ]);
   }
 
+  // Running P/L of open trades (booked part + floating), published by the bots'
+  // risk guard about every 30 s. null when it hasn't reported for 10 minutes.
+  function liveOpen() {
+    var today = data && data.meta.today ? metaJson("today") : null;
+    if (!today || !today.open || Date.now() / 1000 - today.at > 600) return null;
+    return today;
+  }
+  function runningPnl(t, live) {
+    return live && live.open[String(t.ticket)] !== undefined ? live.open[String(t.ticket)] : null;
+  }
+
   function renderTop(s, open) {
     var rangeText = filters.days ? "Last " + filters.days + " days" : "All time";
+    var live = liveOpen(), openPnl = 0, priced = 0;
+    open.forEach(function (t) {
+      var v = runningPnl(t, live);
+      if (v !== null) { openPnl += v; priced++; }
+    });
+    var total = s.net + openPnl;
+    var note = live
+      ? rangeText + " · closed " + money(s.net) + " + open " + money(openPnl) +
+        (priced < open.length ? " (" + (open.length - priced) + " open not priced yet)" : "") +
+        " · live as of " + new Date(live.at * 1000).toLocaleTimeString()
+      : rangeText + " · closed trades only (open P/L not reported) · after commission and swap";
     var hero = el("div", { class: "card hero" }, [
       el("div", { class: "label", text: "Net profit / loss" }),
-      el("div", { class: "value " + signClass(s.net), text: money(s.net) }),
-      el("div", { class: "note", text: rangeText + " · closed trades · after commission and swap" })
+      el("div", { class: "value " + signClass(total), text: money(total) }),
+      el("div", { class: "note", text: note })
     ]);
     var tiles = el("div", { class: "tiles" }, [
       tile("Closed trades", s.n.toLocaleString(), s.win + " W · " + s.loss + " L · " + s.be + " BE"),
       tile("Win rate", pct(s.winRate), "Wins ÷ (wins + losses), break-even excluded"),
       tile("Average R", rMult(s.avgR), "Net result ÷ money at risk", signClass(s.avgR)),
       tile("Profit factor", pf(s.pf), "Gross wins ÷ gross losses (BE excluded)"),
-      tile("Open trades", String(open.length), open.length ? "Shown below" : "None open")
+      tile("Open trades", String(open.length),
+        open.length ? (live ? "Running " + money(openPnl) : "Shown below") : "None open")
     ]);
     return el("div", { class: "top" }, [hero, tiles]);
   }
@@ -1256,17 +1279,21 @@
       cells.push({ text: rMult(t.r_multiple), cls: "num " + signClass(t.r_multiple) });
     } else {
       cells.push({ text: t.be_sl ? "Yes" : "No" });
+      var v = runningPnl(t, liveOpen());
+      cells.push({ text: v === null ? "—" : money(v), cls: "num " + (v === null ? "" : signClass(v)) });
     }
     return cells;
   }
 
   function renderOpen(open) {
+    var live = liveOpen();
     var card = el("div", { class: "card" }, [el("h2", { text: "Open trades" }),
-      el("p", { class: "sub", text: "As of the last snapshot" })]);
+      el("p", { class: "sub", text: "Running P/L = floating + anything already booked (commission, partial close)" +
+        (live ? ", as of " + new Date(live.at * 1000).toLocaleTimeString() : " — not reported by the bots yet") })]);
     if (!open.length) { card.appendChild(el("div", { class: "notice", text: "No open trades." })); return card; }
-    var head = ["Opened", "Bot", "Symbol", "TF", "Side", "Entry", "Initial SL", "TP", "At break-even"];
+    var head = ["Opened", "Bot", "Symbol", "TF", "Side", "Entry", "Initial SL", "TP", "At break-even", "Running P/L"];
     card.appendChild(tableEl(head, open.sort(function (a, b) { return b.opened_utc - a.opened_utc; })
-      .map(function (t) { return tradeCells(t, false); }), [0, 0, 0, 0, 0, 1, 1, 1, 0]));
+      .map(function (t) { return tradeCells(t, false); }), [0, 0, 0, 0, 0, 1, 1, 1, 0, 1]));
     return card;
   }
 

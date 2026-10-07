@@ -61,6 +61,7 @@ _control_dir = None
 _control_mtime = None
 _pos_cache = {}            # position id -> opened by a bot?
 _start_cache = {}          # (ticket, day_open) -> floating P/L at the D1 open
+_realized_cache = {}       # (ticket, volume) -> money already booked on that position
 _started = False
 _start_lock = threading.Lock()
 
@@ -178,6 +179,29 @@ def _start_profit(pos, day_open):
     return _start_cache[key]
 
 
+def _realized(pos):
+    """Booked so far on an open position: entry commission + any partial close, cached."""
+    key = (pos.ticket, pos.volume)          # a partial close changes the volume → re-read
+    if key not in _realized_cache:
+        deals = mt5.history_deals_get(position=pos.ticket)
+        if deals is None:
+            return 0.0
+        _realized_cache[key] = sum(d.profit + d.commission + d.swap + getattr(d, "fee", 0.0)
+                                   for d in deals)
+    return _realized_cache[key]
+
+
+def _open_pnl(magics):
+    """Running result of each open bot trade (ticket -> booked + floating), for the dashboard."""
+    live = {}
+    for p in mt5.positions_get() or []:
+        if p.magic in magics:
+            live[p.ticket] = round(_realized(p) + p.profit + p.swap, 2)
+    for key in [k for k in _realized_cache if k[0] not in live]:
+        del _realized_cache[key]
+    return live
+
+
 def _today_net(day_open):
     """
     Today's result of bot trades, like a prop firm's daily loss: (closed, floating).
@@ -214,15 +238,24 @@ def _today_net(day_open):
 
 
 def _publish_today(closed, floating, force=False):
-    """Today's figures for the dashboard. Throttled: each write refreshes the snapshot."""
+    """
+    Today's figures and each open trade's running P/L, for the dashboard. Throttled
+    (at most every 30 s, and only on a move of ≥ 1 or 2 % of the limit), because each
+    write refreshes the snapshot the page downloads.
+    """
     net = closed + floating
+    live = _open_pnl(_bot_magics())
+    total = sum(live.values())
     last = state.get("published")
     step = max(1.0, limits["max_daily_loss"] * 0.02)
-    if not force and last and (time.time() - last[0] < 30 or abs(net - last[1]) < step):
+    if not force and last and (time.time() - last[0] < 30 or
+                               (abs(net - last[1]) < step and abs(total - last[2]) < step
+                                and set(live) == last[3])):
         return
-    state["published"] = (time.time(), net)
+    state["published"] = (time.time(), net, total, set(live))
     trade_db.set_meta("today", json.dumps({
         "net": round(net, 2), "closed": round(closed, 2), "floating": round(floating, 2),
+        "open_total": round(total, 2), "open": {str(k): v for k, v in live.items()},
         "day_open": state["day_open"], "at": int(time.time())}))
 
 

@@ -636,7 +636,8 @@ detail. It grows by roughly 60 MB a year, almost all of it raw events.
 
 `http://your-server-ip:8080` shows, for any date range, bot, symbol and timeframe:
 
-- net P/L, win rate (break-even excluded), average R, profit factor, open trades
+- net P/L **including open trades' running P/L** (closed + open, live about every 30 s),
+  win rate (break-even excluded), average R, profit factor, open trades with their running P/L
 - one card per bot: description, running/stopped with a **Start / Stop button**, headline
   stats, settings
 - cumulative net profit per bot over time (hover for values; also as a table)
