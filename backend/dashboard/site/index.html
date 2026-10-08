@@ -220,7 +220,7 @@
     <label>Symbol <select id="f-symbol"><option value="">All symbols</option></select></label>
     <label>Timeframe
       <select id="f-tf">
-        <option value="">All</option><option>H4</option><option>H1</option><option>M30</option><option>M15</option>
+        <option value="">All</option><option>D1</option><option>H4</option><option>H1</option><option>M30</option><option>M15</option>
       </select>
     </label>
   </div>
@@ -246,7 +246,7 @@
   // Bots come from the database's `bots` table, so a new strategy appears here
   // without changing this page. Each keeps the color slot it was given when it
   // first registered — color follows the bot, never its rank.
-  var TF_ORDER = ["H4", "H1", "M30", "M15"];
+  var TF_ORDER = ["D1", "H4", "H1", "M30", "M15"];
   var REASONS = [
     ["tp", "Take profit"], ["sl", "Stop loss"], ["breakeven", "Break-even"],
     ["override", "Higher-TF override"], ["limit", "Daily loss limit"], ["trail", "Trailing stop"], ["manual", "Manual"], ["stopout", "Stop out"], ["other", "Other"]
@@ -670,7 +670,7 @@
     sl_buffer_spreads: "SL buffer (× spread)", be_trigger: "BE trigger",
     max_signal_age: "Max signal age (s)", poll_interval: "Poll (s)", magic_base: "Magic base",
     tfs: "Timeframes", sl_atr: "SL (× ATR)", rr: "TP (× risk)", trend: "Trend filter", tp_frac: "TP fraction",
-    trend_ema: "Trend EMA (higher TF)", trend_slope_bars: "EMA slope (candles)", be_r: "Break-even at (R)", partial_pct: "Partial close at BE (%)", trail_r: "Trailing stop (R)"
+    entry_tf: "Entry timeframe", wick_small: "Small wick (× C1 range)", trend_ema: "Trend EMA (higher TF)", trend_slope_bars: "EMA slope (candles)", be_r: "Break-even at (R)", partial_pct: "Partial close at BE (%)", trail_r: "Trailing stop (R)"
   };
 
   // ---- Start / stop ----------------------------------------------------
@@ -906,7 +906,8 @@
         if (settings[k] === undefined) return;
         dl.appendChild(el("dt", { text: SETTING_LABELS[k] }));
         var v = settings[k];
-        dl.appendChild(el("dd", { text: k === "be_trigger" ? pct(v) : (Array.isArray(v) ? v.join(", ") : String(v)) }));
+        dl.appendChild(el("dd", { text: k === "be_trigger" ? pct(v) : (Array.isArray(v) ? v.join(", ") :
+          (v && typeof v === "object" ? Object.keys(v).map(function (x) { return x + " → " + v[x]; }).join(", ") : String(v))) }));
       });
       if (settings.symbols) {
         dl.appendChild(el("dt", { text: "Symbols" }));

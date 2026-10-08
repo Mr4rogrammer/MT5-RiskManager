@@ -91,7 +91,7 @@ def _load_settings():
     DAILY_COUNT_DAYS = int(os.environ.get("BOT_DB_DAILY_COUNT_DAYS", "30"))
     CONTROL_DIR   = os.environ.get("BOTS_CONTROL_DIR", "/config/control").rstrip("/\\")
 
-TF_MINUTES = {15: "M15", 30: "M30", 60: "H1", 240: "H4"}
+TF_MINUTES = {15: "M15", 30: "M30", 60: "H1", 240: "H4", 1440: "D1"}   # D1: candle2_fractal_bot
 
 # Bots whose code was deleted: their trades, events and dashboard entry are removed on start
 REMOVED_BOTS = ("dsweep", "ema2050", "ema921", "golden", "rsi", "bbands", "supertrend",

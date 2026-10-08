@@ -436,6 +436,34 @@ dashboard or with `CRT3T_ENABLED=true` / `CRT2T_ENABLED=true`.
 | `CRT3T_TREND_EMA` / `CRT2T_TREND_EMA` | `50` | EMA length on the higher timeframe |
 | `CRT3T_TREND_SLOPE_BARS` / `CRT2T_TREND_SLOPE_BARS` | `5` | EMA must be rising/falling vs this many candles ago |
 
+## Candle 2 Bot (TTrades fractal model)
+
+`app/candle2_fractal_bot.py` (`c2f`) trades the **reversal candle** of the TTrades fractal
+model on the **Daily and 4H** candle, with the entry on a lower timeframe.
+
+| Step | Rule |
+| ---- | ---- |
+| Sweep | C2 (the D1/H4 candle now forming, opened inside C1) trades beyond C1's high → SELL setup, or low → BUY. Both sides swept → skipped |
+| CISD | On the entry TF (D1 → **M15**, H4 → **M5**): the run of up-close candles that made the high (down-close for a low) is broken — a candle **closes** below the open of the first candle of that run. Only the first such close, entered within `C2F_MAX_SIGNAL_AGE` s (120) |
+| SL | Beyond the sweep extreme (+ spread for SELL) |
+| TP by wick size | wick = C2's run from its open to the extreme ÷ C1's range. **Small** (≤ `C2F_WICK_SMALL`, 0.5) → C1's other side (range expansion). **Large** → back to **C2's open** |
+| Break-even | At 50 % of entry→TP, SL to entry ± commission and 50 % closed |
+
+Each sweep is taken once; a further sweep on the same C2 can give a new setup. D1 is checked
+before H4 and an opposite D1 setup closes a running H4 trade, as with the other bots.
+Session-based entry timeframes and SMT are not part of it. Signals record the wick ratio,
+`small`/`large` and the CISD level.
+
+| Variable | Default | Description |
+| -------- | ------- | ----------- |
+| `C2F_ENABLED` | `false` | Start trading on boot |
+| `C2F_TFS` | `D1,H4` | Candle-2 timeframes |
+| `C2F_ENTRY_D1` / `C2F_ENTRY_H4` | `M15` / `M5` | Entry (CISD) timeframe: M5, M15, M30 or H1 |
+| `C2F_WICK_SMALL` | `0.5` | Wick ÷ C1 range at or below which the target is C1's other side |
+| `C2F_MAGIC_BASE` | `850000` | Magic base (+1440 for D1, +240 for H4) |
+| `C2F_BE_TRIGGER` / `C2F_PARTIAL_PCT` | `0.5` / `50` | Break-even point (fraction of entry→TP) and % closed there |
+| `C2F_MIN_RR`, `C2F_MIN_SL_SPREADS`, `C2F_SL_BUFFER_SPREADS`, `C2F_LOT`, `C2F_SYMBOLS`, … | as the CRT bots | Shared filters and sizing |
+
 ## Controlling any bot
 
 Generic routes work for every bot, including future ones:
@@ -447,7 +475,7 @@ Generic routes work for every bot, including future ones:
 | POST | `/bots/<name>/start` | Start new entries |
 | POST | `/bots/<name>/stop` | Stop new entries (open trades keep SL/TP, break-even still runs) |
 
-Bot names: `crt3`, `crt2`, `crt3t`, `crt2t`, `macd`, `donchian`, `donchian_pt`. The older `/bot/*` and `/bot2/*` routes still work.
+Bot names: `crt3`, `crt2`, `crt3t`, `crt2t`, `c2f`, `macd`, `donchian`, `donchian_pt`. The older `/bot/*` and `/bot2/*` routes still work.
 The easier way is the **Start / Stop** button on each bot's card in the dashboard (see below).
 
 ## Backtesting
@@ -555,6 +583,7 @@ All bot logic lives in `backend/mt5/app/`:
 | `trade_db.py` | SQLite trade journal (see below) |
 | `crt_bot.py` | 3-candle CRT strategy only: the signal, SL/TP, break-even trigger |
 | `candle_two_bot.py` | 2-candle CRT strategy only |
+| `candle2_fractal_bot.py` | TTrades candle 2: D1/H4 sweep, lower-TF CISD entry, wick-size target |
 | `crt_trend_bots.py` | Both CRT strategies with the higher-timeframe trend filter, as separate bots |
 | `indicator_bots.py` | The indicator strategies (MACD, Donchian, Donchian + trail) |
 | `mt5_guard.py` | The lock that serializes MT5 calls across bot threads |
@@ -572,7 +601,7 @@ start/stop/status.
      or `None`.
 2. Create the bot with a **unique** name, comment prefix and magic base, for example:
    `Bot(name="fvg1", label="FVG", prefix="FVG ", title="FVG retest", description="...")`
-   with `magic_base` 820000 in its settings (770000, 780000, 804000, 808000, 811000, 830000 and 840000 are taken).
+   with `magic_base` 820000 in its settings (770000, 780000, 804000, 808000, 811000, 830000, 840000 and 850000 are taken).
 3. Call its start function from `app.py`.
 
 It is journaled automatically and appears on the dashboard with its own color, stats and
