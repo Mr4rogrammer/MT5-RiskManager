@@ -23,6 +23,7 @@ from routes.bot import bot_bp
 from crt_bot import start_crt_bot
 from candle_two_bot import start_candle_two_bot
 from indicator_bots import start_indicator_bots
+from crt_trend_bots import start_crt_trend_bots
 
 load_dotenv()
 logging.basicConfig(
@@ -66,4 +67,5 @@ if __name__ == '__main__':
     start_crt_bot()
     start_candle_two_bot()
     start_indicator_bots()
+    start_crt_trend_bots()
     app.run(host='0.0.0.0', port=int(os.environ.get('MT5_API_PORT', 5001)))

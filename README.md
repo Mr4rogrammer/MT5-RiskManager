@@ -408,6 +408,34 @@ find C1 again after a restart. Commission settings (`CRT_COMMISSION_*`) are shar
 | `CRT2_PARTIAL_PCT` | `50` | % of the position closed when break-even triggers (0 = off) |
 | `CRT2_TRAIL_R` | `0` | After break-even, trail the SL this × the initial risk (0 = off) |
 
+## CRT + Trend Bots
+
+`app/crt_trend_bots.py` runs two more bots, **3-candle CRT + trend** (`crt3t`) and
+**2-candle CRT + trend** (`crt2t`). They trade exactly like `crt3` and `crt2` (same
+signal, SL, TP, break-even, partial; the original files are unchanged), but only in the
+direction of the next higher timeframe. Comparing `crt3` with `crt3t` (and `crt2` with
+`crt2t`) on the dashboard shows whether the trend filter helps.
+
+| CRT on | Trend read on | Bullish → BUY only | Bearish → SELL only |
+| ------ | ------------- | ------------------ | ------------------- |
+| M15 / M30 / H1 / H4 | H1 / H4 / H4 / D1 | last closed candle above EMA 50, EMA 50 higher than 5 candles ago | below EMA 50, EMA 50 lower than 5 candles ago |
+
+Neither → no clear trend, the setup is skipped. Skips show as `against trend (H4 bearish)`
+or `no clear trend (...)` in the dashboard's skip reasons, and every signal records the
+trend it saw. The 2-candle version decides once per C2: the higher-TF candle can't close
+during C2, so it doesn't re-signal on every cross.
+
+Both run next to the originals, so a setup that passes the filter is traded by both bots
+(twice the risk on that setup with `BOTS_RISK_PCT`). Off by default; start them on the
+dashboard or with `CRT3T_ENABLED=true` / `CRT2T_ENABLED=true`.
+
+| Variable | Default | Description |
+| -------- | ------- | ----------- |
+| `CRT3T_MAGIC_BASE` / `CRT2T_MAGIC_BASE` | `830000` / `840000` | Magic number bases |
+| `CRT3T_<X>` / `CRT2T_<X>` | the `CRT_<X>` / `CRT2_<X>` value | Any setting of the original bot (`SYMBOLS`, `BE_TRIGGER`, `PARTIAL_PCT`, …) |
+| `CRT3T_TREND_EMA` / `CRT2T_TREND_EMA` | `50` | EMA length on the higher timeframe |
+| `CRT3T_TREND_SLOPE_BARS` / `CRT2T_TREND_SLOPE_BARS` | `5` | EMA must be rising/falling vs this many candles ago |
+
 ## Controlling any bot
 
 Generic routes work for every bot, including future ones:
@@ -419,7 +447,7 @@ Generic routes work for every bot, including future ones:
 | POST | `/bots/<name>/start` | Start new entries |
 | POST | `/bots/<name>/stop` | Stop new entries (open trades keep SL/TP, break-even still runs) |
 
-Bot names: `crt3`, `crt2`, `macd`, `donchian`, `donchian_pt`. The older `/bot/*` and `/bot2/*` routes still work.
+Bot names: `crt3`, `crt2`, `crt3t`, `crt2t`, `macd`, `donchian`, `donchian_pt`. The older `/bot/*` and `/bot2/*` routes still work.
 The easier way is the **Start / Stop** button on each bot's card in the dashboard (see below).
 
 ## Backtesting
@@ -527,6 +555,7 @@ All bot logic lives in `backend/mt5/app/`:
 | `trade_db.py` | SQLite trade journal (see below) |
 | `crt_bot.py` | 3-candle CRT strategy only: the signal, SL/TP, break-even trigger |
 | `candle_two_bot.py` | 2-candle CRT strategy only |
+| `crt_trend_bots.py` | Both CRT strategies with the higher-timeframe trend filter, as separate bots |
 | `indicator_bots.py` | The indicator strategies (MACD, Donchian, Donchian + trail) |
 | `mt5_guard.py` | The lock that serializes MT5 calls across bot threads |
 | `risk_guard.py` | Account-wide limits for all bots: max daily loss (closes everything and pauses until the next day) and max open trades |
@@ -543,7 +572,7 @@ start/stop/status.
      or `None`.
 2. Create the bot with a **unique** name, comment prefix and magic base, for example:
    `Bot(name="fvg1", label="FVG", prefix="FVG ", title="FVG retest", description="...")`
-   with `magic_base` 820000 in its settings (770000, 780000, 804000, 808000 and 811000 are taken).
+   with `magic_base` 820000 in its settings (770000, 780000, 804000, 808000, 811000, 830000 and 840000 are taken).
 3. Call its start function from `app.py`.
 
 It is journaled automatically and appears on the dashboard with its own color, stats and
