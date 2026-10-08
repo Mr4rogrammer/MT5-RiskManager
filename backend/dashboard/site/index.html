@@ -124,6 +124,15 @@
   .limits .status.halted { color: var(--bad-text); font-weight: 600; }
   .reset { margin-top: 12px; }
   .reset-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; font-size: 13px; }
+  .export-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px 16px; margin-bottom: 12px; }
+  .export-form label { display: flex; flex-direction: column; gap: 4px; color: var(--text-secondary); font-size: 12px; }
+  .export-form input {
+    font: inherit; color: var(--text-primary); background: var(--surface-1);
+    border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px;
+  }
+  .export-checks { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-bottom: 12px; font-size: 13px; }
+  .export-checks label { display: inline-flex; align-items: center; gap: 6px; }
+  .export-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
   button.danger { color: var(--bad-text); border-color: var(--bad-text); }
   button.danger:disabled { opacity: 0.6; cursor: default; }
   .limits .applied { color: var(--text-muted); font-size: 12px; margin-top: 8px; }
@@ -561,6 +570,7 @@
     content.appendChild(el("div", { class: "full" }, [renderLog()]));
     content.appendChild(el("div", { class: "full" }, [renderOpen(open)]));
     content.appendChild(el("div", { class: "full" }, [renderRecent(closed)]));
+    content.appendChild(el("div", { class: "full" }, [renderExport()]));
     content.appendChild(el("div", { class: "full" }, [renderReset()]));
     afterMount.splice(0).forEach(function (fn) { fn(); });
     if (focused && document.getElementById(focused)) document.getElementById(focused).focus();
@@ -670,7 +680,8 @@
     sl_buffer_spreads: "SL buffer (× spread)", be_trigger: "BE trigger",
     max_signal_age: "Max signal age (s)", poll_interval: "Poll (s)", magic_base: "Magic base",
     tfs: "Timeframes", sl_atr: "SL (× ATR)", rr: "TP (× risk)", trend: "Trend filter", tp_frac: "TP fraction",
-    entry_tf: "Entry timeframe", wick_small: "Small wick (× C1 range)", trend_ema: "Trend EMA (higher TF)", trend_slope_bars: "EMA slope (candles)", be_r: "Break-even at (R)", partial_pct: "Partial close at BE (%)", trail_r: "Trailing stop (R)"
+    entry_tf: "Entry timeframe", wick_small: "Small wick (× C1 range)", trend_ema: "Trend EMA (higher TF)", trend_slope_bars: "EMA slope (candles)", be_r: "Break-even at (R)", partial_pct: "Partial close at BE (%)", trail_r: "Trailing stop (R)",
+    c1_max_wick: "C1 max wicks (of range)", c2_max_retrace: "C2 max reach into C1", be_level: "BE + partial at C1 level"
   };
 
   // ---- Start / stop ----------------------------------------------------
@@ -906,7 +917,7 @@
         if (settings[k] === undefined) return;
         dl.appendChild(el("dt", { text: SETTING_LABELS[k] }));
         var v = settings[k];
-        dl.appendChild(el("dd", { text: k === "be_trigger" ? pct(v) : (Array.isArray(v) ? v.join(", ") :
+        dl.appendChild(el("dd", { text: ["be_trigger", "c1_max_wick", "c2_max_retrace", "be_level"].indexOf(k) >= 0 ? pct(v) : (Array.isArray(v) ? v.join(", ") :
           (v && typeof v === "object" ? Object.keys(v).map(function (x) { return x + " → " + v[x]; }).join(", ") : String(v))) }));
       });
       if (settings.symbols) {
@@ -1511,12 +1522,12 @@
     return r.replace(/\d+(\.\d+)?/g, "N");
   }
 
-  var STATUS_LABELS = { skipped: "Skipped", rejected: "Rejected", error: "Error", signal: "Signal", opened: "Opened",
+  var STATUS_LABELS = { skipped: "Skipped", rejected: "Rejected", failed: "Failed (close / SL move)", error: "Error", signal: "Signal", opened: "Opened",
     closed: "Closed", breakeven: "Break-even", partial: "Partial close", partial_skipped: "Partial skipped", control: "Start / stop" };
 
   // ---- Bot log: the newest raw events from the snapshot --------------------
   var LOG_VIEWS = [
-    ["problems", "Rejected & errors", ["rejected", "error"]],
+    ["problems", "Rejected, failed & errors", ["rejected", "failed", "error"]],
     ["skipped", "Skipped", ["skipped"]],
     ["trades", "Trades", ["opened", "closed", "breakeven", "partial", "partial_skipped"]],
     ["all", "All", null]
@@ -1562,7 +1573,7 @@
     }
     var body = list.map(function (e) {
       var det = logDetail(e);
-      var bad = e.status === "rejected" || e.status === "error";
+      var bad = e.status === "rejected" || e.status === "failed" || e.status === "error";
       return [
         { text: new Date(e.time * 1000).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" }) },
         { node: el("span", {}, [el("i", { class: "dot", style: "background:" + botColor(e.bot) }), document.createTextNode(botName(e.bot))]) },
@@ -1638,6 +1649,374 @@
     card.appendChild(tableEl(head, closed.slice().reverse().slice(0, 100).map(function (t) { return tradeCells(t, true); }),
       [0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 1, 1]));
     return card;
+  }
+
+  // ------------------------------------------------------------------
+  // Export for AI — closed (and open) trades with full timestamps, plus the
+  // context an AI needs to analyse them: bot settings, breakdowns, equity,
+  // signal funnel, account. Markdown (compact, paste into a chat), JSON or CSV.
+  // ------------------------------------------------------------------
+  var exportOpts = { format: "md", from: "", to: "", open: true, bots: true, breakdowns: true,
+                     equity: true, funnel: true, account: true, prompt: true };
+  var WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  var EXPORT_PARTS = [
+    ["prompt", "Analysis prompt"], ["bots", "Bot strategy & settings"], ["breakdowns", "Breakdowns"],
+    ["equity", "Equity, drawdown & streaks"], ["funnel", "Signals & skip reasons"],
+    ["open", "Open trades"], ["account", "Account & limits"]
+  ];
+  var AI_PROMPT = [
+    "You are a quantitative trading analyst. Below is the journal of automated MetaTrader 5 bots.",
+    "Analyse it and answer with evidence (numbers from the data) for every claim:",
+    "1. Edge per bot and per bot × timeframe: expectancy in R, win rate, profit factor, sample size. Say when a sample (< 30 trades) is too small to conclude.",
+    "2. Where it works and where it doesn't: symbols, sides, sessions, weekdays, UTC hours, trade duration.",
+    "3. Exits: how TP / SL / break-even / override / trailing exits contribute; whether break-even or other rules cut winners or save losers.",
+    "4. Costs: impact of commission, swap and spread on net results.",
+    "5. Risk: equity curve, max drawdown, losing streaks, consistency of risk per trade.",
+    "6. Signals: how many setups were skipped and why; whether filters look too strict or too loose.",
+    "7. Concrete, testable changes (e.g. drop a symbol, restrict hours, change TF), ranked by expected impact, and what to watch next.",
+    "Times: *_utc are UTC; *_broker are broker server time with its UTC offset."
+  ].join("\n");
+
+  function isoUtc(sec) { return sec ? new Date(sec * 1000).toISOString().slice(0, 19) + "Z" : null; }
+  function isoBroker(sec) {
+    if (!sec) return null;
+    var off = data.offset || 0, a = Math.abs(off);
+    var tz = (off < 0 ? "-" : "+") + String(Math.floor(a / 3600)).padStart(2, "0") + ":" +
+             String(Math.floor(a % 3600 / 60)).padStart(2, "0");
+    return new Date((sec + off) * 1000).toISOString().slice(0, 19) + tz;
+  }
+  function num(v) { return v === null || v === undefined || isNaN(v) ? null : +(+v).toFixed(5); }
+  function sessionOf(h) {
+    return h < 7 ? "Asia" : h < 12 ? "London" : h < 16 ? "London/NY overlap" : h < 21 ? "New York" : "After NY";
+  }
+  function durationBucket(m) {
+    return m === null ? null : m < 15 ? "< 15m" : m < 60 ? "15m–1h" : m < 240 ? "1–4h" :
+           m < 1440 ? "4–24h" : m < 4320 ? "1–3d" : "> 3d";
+  }
+
+  function exportRow(t) {
+    var off = data.offset || 0;
+    var open = t.opened_utc ? new Date(t.opened_utc * 1000) : null;
+    var slDist = t.entry_price != null && t.sl_initial != null ? Math.abs(t.entry_price - t.sl_initial) : null;
+    var tpDist = t.entry_price != null && t.tp ? Math.abs(t.tp - t.entry_price) : null;
+    var end = t.closed_utc || (t.status === "open" ? Math.floor(Date.now() / 1000) : null);
+    var dur = t.opened_utc && end ? Math.round((end - t.opened_utc) / 60) : null;
+    var r = {
+      ticket: t.ticket, status: t.status, bot: t.bot, bot_label: botName(t.bot),
+      symbol: t.symbol, timeframe: t.timeframe || null, side: t.side, volume: num(t.volume),
+      signal_candle_utc: isoUtc(t.signal_time ? t.signal_time - off : null),   // signal_time is broker time
+      opened_utc: isoUtc(t.opened_utc), closed_utc: isoUtc(t.closed_utc),
+      opened_broker: isoBroker(t.opened_utc), closed_broker: isoBroker(t.closed_utc),
+      duration_minutes: dur, duration_bucket: durationBucket(dur),
+      open_weekday_utc: open ? WEEKDAYS[open.getUTCDay()] : null,
+      open_hour_utc: open ? open.getUTCHours() : null,
+      session_utc: open ? sessionOf(open.getUTCHours()) : null,
+      entry_price: num(t.entry_price), sl_initial: num(t.sl_initial), tp: num(t.tp),
+      exit_price: num(t.exit_price), sl_distance: num(slDist), tp_distance: num(tpDist),
+      planned_rr: slDist && tpDist ? num(tpDist / slDist) : null,
+      spread_at_entry: num(t.spread_at_entry), be_trigger: num(t.be_trigger),
+      moved_to_breakeven: t.be_sl ? true : false,
+      breakeven_utc: isoUtc(t.be_at),                                         // be_at is already UTC
+      exit_reason: t.exit_reason || null,
+      outcome: t.status === "closed" ? outcome(t) : null,
+      risk_money: num(t.risk_money), profit: num(t.profit), commission: num(t.commission),
+      swap: num(t.swap), fee: num(t.fee), net: num(t.net), r_multiple: num(t.r_multiple),
+      source: t.source || null
+    };
+    if (t.status === "open") {
+      var v = runningPnl(t, liveOpen());
+      r.running_pnl = num(v);
+    }
+    return r;
+  }
+
+  // Running net / R, drawdown from the peak and win-loss streak after each closed trade
+  function addEquity(rows) {
+    var cum = 0, cumR = 0, peak = 0, streak = 0;
+    rows.forEach(function (r, i) {
+      cum += r.net || 0; cumR += r.r_multiple || 0; peak = Math.max(peak, cum);
+      if (r.outcome === "win") streak = streak > 0 ? streak + 1 : 1;
+      else if (r.outcome === "loss") streak = streak < 0 ? streak - 1 : -1;
+      r.seq = i + 1; r.cum_net = num(cum); r.cum_r = num(cumR);
+      r.drawdown = num(cum - peak); r.streak = streak;
+    });
+  }
+
+  function groupStats(rows, keyFn) {
+    var groups = {};
+    rows.forEach(function (r) {
+      var k = keyFn(r); if (k === null || k === undefined) k = "—";
+      (groups[k] = groups[k] || []).push(r);
+    });
+    return Object.keys(groups).map(function (k) {
+      var g = groups[k], st = statsOf(g);
+      st.key = k;
+      return st;
+    }).sort(function (a, b) { return b.trades - a.trades; });
+  }
+
+  function statsOf(rows) {
+    var w = 0, l = 0, be = 0, net = 0, gw = 0, gl = 0, rs = 0, rn = 0, dur = 0, dn = 0, cost = 0;
+    rows.forEach(function (r) {
+      if (r.outcome === "win") { w++; gw += r.net || 0; }
+      else if (r.outcome === "loss") { l++; gl -= r.net || 0; } else be++;
+      net += r.net || 0;
+      cost += (r.commission || 0) + (r.swap || 0) + (r.fee || 0);
+      if (r.r_multiple !== null) { rs += r.r_multiple; rn++; }
+      if (r.duration_minutes !== null) { dur += r.duration_minutes; dn++; }
+    });
+    return { trades: rows.length, wins: w, losses: l, breakeven: be,
+             win_rate: w + l ? num(w / (w + l)) : null, net: num(net), costs: num(cost),
+             total_r: num(rs), avg_r: rn ? num(rs / rn) : null,
+             profit_factor: gl > 0 ? num(gw / gl) : (gw > 0 ? "inf" : null),
+             avg_win: w ? num(gw / w) : null, avg_loss: l ? num(-gl / l) : null,
+             avg_duration_min: dn ? Math.round(dur / dn) : null };
+  }
+
+  function equitySummary(rows) {
+    var maxDd = 0, maxDdAt = null, best = null, worst = null, maxW = 0, maxL = 0;
+    rows.forEach(function (r) {
+      if (r.drawdown < maxDd) { maxDd = r.drawdown; maxDdAt = r.closed_utc; }
+      if (!best || r.net > best.net) best = r;
+      if (!worst || r.net < worst.net) worst = r;
+      maxW = Math.max(maxW, r.streak); maxL = Math.min(maxL, r.streak);
+    });
+    var cur = liveOpen();
+    return { final_net: rows.length ? rows[rows.length - 1].cum_net : 0,
+             max_drawdown: num(maxDd), max_drawdown_at_utc: maxDdAt,
+             max_drawdown_pct_of_balance: cur && cur.balance ? num(maxDd / cur.balance * 100) : null,
+             longest_win_streak: maxW, longest_loss_streak: -maxL,
+             best_trade: best && { ticket: best.ticket, net: best.net, r: best.r_multiple, closed_utc: best.closed_utc },
+             worst_trade: worst && { ticket: worst.ticket, net: worst.net, r: worst.r_multiple, closed_utc: worst.closed_utc } };
+  }
+
+  function exportRange() {
+    var since = exportOpts.from ? Date.parse(exportOpts.from + "T00:00:00Z") / 1000 : sinceUtc();
+    var until = exportOpts.to ? Date.parse(exportOpts.to + "T00:00:00Z") / 1000 + 86400 : Infinity;
+    return { since: since, until: until };
+  }
+
+  function buildExport() {
+    var rg = exportRange();
+    var closed = data.trades.filter(function (t) {
+      return t.status === "closed" && inSlice(t) && (t.closed_utc || 0) >= rg.since && (t.closed_utc || 0) < rg.until;
+    }).sort(function (a, b) { return a.closed_utc - b.closed_utc; });
+    var rows = closed.map(exportRow);
+    if (exportOpts.equity) addEquity(rows);
+    var out = {
+      exported_at_utc: isoUtc(Math.floor(Date.now() / 1000)),
+      broker_utc_offset_seconds: data.offset || 0,
+      range_utc: { from: isoUtc(rg.since) || "start", to: rg.until === Infinity ? "now" : isoUtc(rg.until) },
+      filters: { bot: filters.bot || "all", symbol: filters.symbol || "all", timeframe: filters.tf || "all" },
+      notes: {
+        times: "*_utc = UTC (ISO 8601, Z); *_broker = broker server wall clock with its UTC offset; " +
+               "signal_candle_utc = open time of the candle that defined the setup. Sessions by UTC hour: " +
+               "Asia 0–7, London 7–12, London/NY overlap 12–16, New York 16–21, After NY 21–24.",
+        money: "Account currency. net = profit + commission + swap + fee; risk_money = loss at the initial SL before costs; " +
+               "r_multiple = net / risk_money; costs = commission + swap + fee.",
+        outcome: "win / loss by net; 'be' = break-even exit with |R| < 0.1 (excluded from win rate).",
+        exit_reason: "tp, sl, breakeven, override (higher-TF), limit (daily loss limit), trail, manual, stopout, other.",
+        equity: "seq / cum_net / cum_r / drawdown (from the running peak) / streak (+wins, −losses in a row) follow close order.",
+        source: "bot = journaled when opened; history = back-filled from MT5 history (less detail)."
+      },
+      summary: statsOf(rows)
+    };
+    if (exportOpts.prompt) out.analysis_prompt = AI_PROMPT;
+    if (exportOpts.account) {
+      var cur = liveOpen();
+      out.account = { balance: cur ? cur.balance : null, equity: cur ? cur.equity : null,
+                      limits: metaJson("limits"), halted_until: metaJson("halted_until") };
+    }
+    if (exportOpts.bots) {
+      var used = {};
+      rows.forEach(function (r) { used[r.bot] = 1; });
+      if (filters.bot) used[filters.bot] = 1;
+      out.bots = Object.keys(used).sort().map(function (b) {
+        var info = botInfo(b);
+        return { name: b, label: botName(b), description: info.description || null,
+                 enabled: info.enabled === 1 ? true : (info.enabled === 0 ? false : null),
+                 settings: info.settings || {} };
+      });
+    }
+    if (exportOpts.equity) out.equity = equitySummary(rows);
+    if (exportOpts.breakdowns) {
+      var by = function (f) { return groupStats(rows, f); };
+      out.breakdowns = {
+        by_bot: by(function (r) { return r.bot; }),
+        by_bot_timeframe: by(function (r) { return r.bot + " " + (r.timeframe || "—"); }),
+        by_symbol: by(function (r) { return r.symbol; }),
+        by_timeframe: by(function (r) { return r.timeframe; }),
+        by_side: by(function (r) { return r.side; }),
+        by_exit_reason: by(function (r) { return r.exit_reason; }),
+        by_session_utc: by(function (r) { return r.session_utc; }),
+        by_weekday_utc: by(function (r) { return r.open_weekday_utc; }),
+        by_hour_utc: by(function (r) { return r.open_hour_utc; }).sort(function (a, b) { return +a.key - +b.key; }),
+        by_duration: by(function (r) { return r.duration_bucket; }),
+        by_moved_to_breakeven: by(function (r) { return r.moved_to_breakeven ? "yes" : "no"; }),
+        by_month_utc: by(function (r) { return r.closed_utc ? r.closed_utc.slice(0, 7) : null; })
+                        .sort(function (a, b) { return a.key < b.key ? -1 : 1; })
+      };
+    }
+    if (exportOpts.funnel) {
+      var ev = data.events.filter(function (e) {
+        return inSlice({ bot: e.bot, symbol: e.symbol, timeframe: e.timeframe }) &&
+               e.day + 86400 > rg.since && e.day < rg.until;
+      });
+      var counts = {}, reasons = {};
+      ev.forEach(function (e) {
+        var k = e.bot + "|" + e.status;
+        counts[k] = (counts[k] || 0) + e.n;
+        if (e.status !== "signal" && e.status !== "opened") {
+          var rk = e.bot + "|" + e.status + "|" + (e.reason || "");
+          reasons[rk] = (reasons[rk] || 0) + e.n;
+        }
+      });
+      var funnel = {};
+      Object.keys(counts).forEach(function (k) {
+        var p = k.split("|"); (funnel[p[0]] = funnel[p[0]] || {})[p[1]] = counts[k];
+      });
+      out.signal_funnel = { note: "Counts per bot: signal = setups found, opened = trades taken, skipped / rejected / error = not taken. Daily granularity (older days weekly).",
+        by_bot: funnel,
+        top_skip_reasons: Object.keys(reasons).map(function (k) {
+          var p = k.split("|"); return { bot: p[0], status: p[1], reason: p.slice(2).join("|"), n: reasons[k] };
+        }).sort(function (a, b) { return b.n - a.n; }).slice(0, 40) };
+    }
+    out.closed_trades = rows;
+    if (exportOpts.open) {
+      out.open_trades = data.trades.filter(function (t) { return t.status === "open" && inSlice(t); })
+        .sort(function (a, b) { return a.opened_utc - b.opened_utc; }).map(exportRow);
+    }
+    return out;
+  }
+
+  function csvCell(v) {
+    if (v === null || v === undefined) return "";
+    if (typeof v === "object") v = JSON.stringify(v);
+    var s = String(v);
+    return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  }
+  function toCsv(rows) {
+    if (!rows.length) return "";
+    var cols = [];
+    rows.forEach(function (r) { Object.keys(r).forEach(function (c) { if (cols.indexOf(c) < 0) cols.push(c); }); });
+    return [cols.join(",")].concat(rows.map(function (r) {
+      return cols.map(function (c) { return csvCell(r[c]); }).join(",");
+    })).join("\r\n") + "\r\n";
+  }
+  function mdTable(list) {
+    if (!list.length) return "_none_\n";
+    var cols = Object.keys(list[0]);
+    if (cols[cols.length - 1] === "key") cols.unshift(cols.pop());
+    return "| " + cols.join(" | ") + " |\n|" + cols.map(function () { return " --- "; }).join("|") + "|\n" +
+      list.map(function (r) { return "| " + cols.map(function (c) { return r[c] === null ? "" : String(r[c]); }).join(" | ") + " |"; }).join("\n") + "\n";
+  }
+
+  function toMarkdown(x) {
+    var md = "# MT5 bot trade journal\n\n";
+    if (x.analysis_prompt) md += "## Task\n\n" + x.analysis_prompt + "\n\n";
+    md += "## Context\n\n- Exported: " + x.exported_at_utc + "\n- Range (UTC, by close time): " + x.range_utc.from +
+          " → " + x.range_utc.to + "\n- Filters: bot " + x.filters.bot + ", symbol " + x.filters.symbol +
+          ", timeframe " + x.filters.timeframe + "\n- Broker UTC offset: " + (x.broker_utc_offset_seconds / 3600) + " h\n";
+    Object.keys(x.notes).forEach(function (k) { md += "- " + k + ": " + x.notes[k] + "\n"; });
+    if (x.account) md += "\n## Account\n\n```json\n" + JSON.stringify(x.account, null, 2) + "\n```\n";
+    if (x.bots) {
+      md += "\n## Bots\n";
+      x.bots.forEach(function (b) {
+        md += "\n### " + b.label + " (`" + b.name + "`)" + (b.enabled === false ? " — stopped" : "") + "\n\n" +
+              (b.description ? b.description + "\n\n" : "") + "Settings: `" + JSON.stringify(b.settings) + "`\n";
+      });
+    }
+    md += "\n## Summary\n\n" + mdTable([x.summary]);
+    if (x.equity) md += "\n## Equity & drawdown\n\n```json\n" + JSON.stringify(x.equity, null, 2) + "\n```\n";
+    if (x.breakdowns) {
+      md += "\n## Breakdowns\n";
+      Object.keys(x.breakdowns).forEach(function (k) {
+        md += "\n### " + k.replace(/_/g, " ") + "\n\n" + mdTable(x.breakdowns[k]);
+      });
+    }
+    if (x.signal_funnel) {
+      md += "\n## Signals & skips\n\n" + x.signal_funnel.note + "\n\n```json\n" + JSON.stringify(x.signal_funnel.by_bot, null, 2) +
+            "\n```\n\n### Top skip / reject reasons\n\n" + mdTable(x.signal_funnel.top_skip_reasons);
+    }
+    md += "\n## Closed trades (" + x.closed_trades.length + ", oldest first)\n\n```csv\n" + toCsv(x.closed_trades) + "```\n";
+    if (x.open_trades) md += "\n## Open trades (" + x.open_trades.length + ")\n\n" +
+      (x.open_trades.length ? "```csv\n" + toCsv(x.open_trades) + "```\n" : "_none_\n");
+    return md;
+  }
+
+  function exportText() {
+    var x = buildExport();
+    if (exportOpts.format === "json") return { text: JSON.stringify(x, null, 2), type: "application/json", ext: "json", n: x.closed_trades.length };
+    if (exportOpts.format === "csv") {
+      return { text: toCsv(x.closed_trades.concat(x.open_trades || [])), type: "text/csv", ext: "csv", n: x.closed_trades.length };
+    }
+    return { text: toMarkdown(x), type: "text/markdown", ext: "md", n: x.closed_trades.length };
+  }
+
+  function exportName(ext) {
+    var stamp = new Date().toISOString().slice(0, 16).replace(/[-:]/g, "").replace("T", "-");
+    var range = exportOpts.from || exportOpts.to ? (exportOpts.from || "start") + "_to_" + (exportOpts.to || "now")
+                                                 : (filters.days ? filters.days + "d" : "all");
+    return ["trades", range, filters.bot, filters.symbol, filters.tf].filter(Boolean).join("_") + "_" + stamp + "Z." + ext;
+  }
+
+  function renderExport() {
+    var status = el("span", { class: "sub", style: "margin:0", role: "status" });
+    function report(r, verb) {
+      status.textContent = verb + " " + r.n.toLocaleString() + " closed trades · " +
+        Math.round(r.text.length / 1024).toLocaleString() + " KB · ~" +
+        Math.round(r.text.length / 4).toLocaleString() + " tokens";
+    }
+    var fmt = el("select", { id: "exp-format" });
+    [["md", "Markdown (paste into AI chat)"], ["json", "JSON (structured, for AI / scripts)"], ["csv", "CSV (trades only)"]]
+      .forEach(function (o) { fmt.appendChild(el("option", { value: o[0], text: o[1] })); });
+    fmt.value = exportOpts.format;
+    fmt.addEventListener("change", function () { exportOpts.format = this.value; });
+    function dateField(id, key, label) {
+      var input = el("input", { id: id, type: "date", value: exportOpts[key] });
+      input.addEventListener("change", function () { exportOpts[key] = this.value; });
+      return el("label", {}, [document.createTextNode(label), input]);
+    }
+    var checks = el("div", { class: "export-checks" }, EXPORT_PARTS.map(function (p) {
+      var cb = el("input", { type: "checkbox", id: "exp-" + p[0] });
+      cb.checked = exportOpts[p[0]];
+      cb.addEventListener("change", function () { exportOpts[p[0]] = this.checked; });
+      return el("label", {}, [cb, document.createTextNode(p[1])]);
+    }));
+    var dl = el("button", { type: "button", text: "Download" });
+    dl.addEventListener("click", function () {
+      var r = exportText();
+      var url = URL.createObjectURL(new Blob([r.text], { type: r.type + ";charset=utf-8" }));
+      var a = el("a", { href: url, download: exportName(r.ext) });
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+      report(r, "Downloaded");
+    });
+    var copy = el("button", { type: "button", text: "Copy to clipboard" });
+    copy.addEventListener("click", function () {
+      var r = exportText();
+      var done = function () { report(r, "Copied"); };
+      var fallback = function () {
+        var ta = el("textarea", { style: "position:fixed;opacity:0" });
+        ta.value = r.text; document.body.appendChild(ta); ta.select();
+        try { document.execCommand("copy"); done(); } catch (e) { status.textContent = "Copy failed — use Download"; }
+        ta.remove();
+      };
+      if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(r.text).then(done, fallback);
+      else fallback();
+    });
+    return el("div", { class: "card export" }, [
+      el("h2", { text: "Export for AI" }),
+      el("p", { class: "sub", text: "Closed trades (by close time) with UTC and broker timestamps, plus the context an AI needs to " +
+        "analyse them. Bot, symbol and timeframe follow the filters above; leave the dates empty to use the selected range." }),
+      el("div", { class: "export-form" }, [
+        el("label", {}, [document.createTextNode("Format"), fmt]),
+        dateField("exp-from", "from", "From (UTC)"),
+        dateField("exp-to", "to", "To (UTC, inclusive)")
+      ]),
+      checks,
+      el("div", { class: "export-row" }, [dl, copy, status])
+    ]);
   }
 
   // ------------------------------------------------------------------

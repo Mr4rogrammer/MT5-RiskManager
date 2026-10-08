@@ -95,7 +95,7 @@ TF_MINUTES = {15: "M15", 30: "M30", 60: "H1", 240: "H4", 1440: "D1"}   # D1: can
 
 # Bots whose code was deleted: their trades, events and dashboard entry are removed on start
 REMOVED_BOTS = ("dsweep", "ema2050", "ema921", "golden", "rsi", "bbands", "supertrend",
-                "stoch", "ichimoku", "supertrend_pt")
+                "stoch", "ichimoku", "supertrend_pt", "macd", "donchian", "donchian_pt")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS trades (
@@ -191,10 +191,12 @@ _bot_state_cache = {}  # bot name -> last written (settings JSON, enabled)
 # Newest raw events copied into the snapshot for the dashboard's bot log
 RECENT_EVENTS = int(os.environ.get("BOT_DB_RECENT_EVENTS", "300"))
 
-# Columns the dashboard reads; everything else stays in bots.db only
+# Columns the dashboard reads (the cost / timing detail is for its trade export);
+# everything else stays in bots.db only
 SNAPSHOT_TRADE_COLUMNS = (
-    "ticket, bot, symbol, timeframe, side, volume, opened_at, entry_price, sl_initial,"
-    " tp, risk_money, be_sl, status, closed_at, exit_price, exit_reason, net, r_multiple"
+    "ticket, bot, symbol, timeframe, side, volume, signal_time, opened_at, entry_price,"
+    " sl_initial, tp, risk_money, spread_at_entry, be_trigger, be_sl, be_at, status,"
+    " closed_at, exit_price, exit_reason, profit, commission, swap, fee, net, r_multiple, source"
 )
 
 

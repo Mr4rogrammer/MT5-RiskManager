@@ -45,7 +45,19 @@ import MetaTrader5 as mt5
 
 from bot_common import Bot, TIMEFRAMES, DEFAULT_SYMBOLS, sl_beyond_sweep
 from crt_bot import detect_signal
-from indicator_bots import ema
+
+
+def ema(x, n):
+    """Exponential moving average, seeded with the SMA (numpy, oldest → newest)."""
+    out = np.full(len(x), np.nan)
+    if len(x) < n:
+        return out
+    a = 2.0 / (n + 1)
+    out[n - 1] = x[:n].mean()
+    for i in range(n, len(x)):
+        out[i] = out[i - 1] + a * (x[i] - out[i - 1])
+    return out
+
 
 # CRT timeframe -> timeframe the trend is read on
 TREND_TF = {

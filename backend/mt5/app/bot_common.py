@@ -88,6 +88,13 @@ def retcode_reason(result):
     broker = (result.comment or "").strip()
     return f"rejected {result.retcode}: {text}" + (f" (broker: {broker})" if broker else "")
 
+
+def failure_reason(action, result):
+    """'BE move rejected 10016: invalid stops' — for a close / modify that didn't go through."""
+    if result is None:
+        return f"{action}: order_send returned None ({mt5.last_error()})"
+    return f"{action} {retcode_reason(result)}"
+
 # Broker commission settings — filled by load_fees()
 fees = {}
 
@@ -342,9 +349,8 @@ class Bot:
         result = mt5.order_send(request)
         if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
             trade_db.set_exit_hint(pos.ticket, None)
-            err = result.retcode if result else mt5.last_error()
-            logger.warning("%s close failed: %s ticket=%s err=%s",
-                           self.label, pos.symbol, pos.ticket, err)
+            self.record(pos.symbol, self.position_tf(pos), "failed", ticket=pos.ticket,
+                        side=position_side(pos), reason=failure_reason(f"close ({reason})", result))
             return None
         return result.price
 
@@ -573,9 +579,8 @@ class Bot:
             self.record(pos.symbol, self.position_tf(pos), "partial", ticket=pos.ticket,
                         closed=part, remaining=rest, price=result.price)
         else:
-            err = result.retcode if result else mt5.last_error()
-            logger.warning("%s partial close failed: %s ticket=%s err=%s",
-                           self.label, pos.symbol, pos.ticket, err)
+            self.record(pos.symbol, self.position_tf(pos), "failed", ticket=pos.ticket,
+                        side=position_side(pos), reason=failure_reason("partial close", result))
 
     def trail(self, pos):
         """
@@ -618,9 +623,9 @@ class Bot:
                         pos.ticket, pos.sl, new_sl)
         else:
             self._trail_retry_after[pos.ticket] = time.time() + BE_RETRY_SECONDS
-            err = result.retcode if result else mt5.last_error()
-            logger.warning("%s trail failed: %s ticket=%s err=%s (retry in %ss)",
-                           self.label, pos.symbol, pos.ticket, err, BE_RETRY_SECONDS)
+            self.record(pos.symbol, self.position_tf(pos), "failed", ticket=pos.ticket,
+                        side=position_side(pos), reason=failure_reason("trailing SL", result),
+                        new_sl=new_sl, retry_seconds=BE_RETRY_SECONDS)
 
     def breakeven(self, pos, trigger):
         """
@@ -677,9 +682,9 @@ class Bot:
                         ticket=pos.ticket, entry=entry, new_sl=new_sl)
         else:
             self._be_retry_after[pos.ticket] = time.time() + BE_RETRY_SECONDS
-            err = result.retcode if result else mt5.last_error()
-            logger.warning("%s BE failed: %s ticket=%s err=%s (retry in %ss)",
-                           self.label, pos.symbol, pos.ticket, err, BE_RETRY_SECONDS)
+            self.record(pos.symbol, self.position_tf(pos), "failed", ticket=pos.ticket,
+                        side=position_side(pos), reason=failure_reason("BE move", result),
+                        new_sl=new_sl, retry_seconds=BE_RETRY_SECONDS)
 
     def try_enable(self):
         """Start new entries unless the account can't run several bots. Returns (ok, reason)."""

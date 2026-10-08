@@ -436,6 +436,36 @@ dashboard or with `CRT3T_ENABLED=true` / `CRT2T_ENABLED=true`.
 | `CRT3T_TREND_EMA` / `CRT2T_TREND_EMA` | `50` | EMA length on the higher timeframe |
 | `CRT3T_TREND_SLOPE_BARS` / `CRT2T_TREND_SLOPE_BARS` | `5` | EMA must be rising/falling vs this many candles ago |
 
+## Strict 3-candle CRT Bot
+
+`app/crt3_strict_bot.py` runs **3-candle CRT strict** (`crt3s`) next to `crt3` (unchanged).
+Same timeframes (H4 → H1 → M30 → M15), C3 entry and shared filters, plus two candle rules
+and a break-even at C1's midpoint. Bearish example, C1 high 100 / low 0 (bullish mirrors it):
+
+| Step | Rule | Example |
+| ---- | ---- | ------- |
+| C1 | Strong candle: upper + lower wick ≤ 30 % of its range | body ≥ 70 points |
+| C2 | Sweeps C1's high and closes back inside | high > 100, close < 100 |
+| C2 | The whole candle, wick included, stays within 40 % of C1 from the swept side | low > 60 |
+| Entry | Sell at C3's open (within `MAX_SIGNAL_AGE` s) | |
+| SL | Above C2's wick high + spread | |
+| Break-even | At C1's 50 % level: close 50 % and move the SL to entry ± commission | 50 |
+| TP | C1's low | 0 |
+
+A crt3 setup that fails a rule is logged as skipped (`C1 wicks 42% of range (max 30%)`,
+`C2 crossed C1 40% level (reached 55%)`), so the dashboard shows what the rules remove.
+Comparing `crt3` and `crt3s` shows whether the stricter setup is worth the fewer trades.
+Both trade the setups that pass, so those carry twice the risk with `BOTS_RISK_PCT`.
+Off by default; start it on the dashboard or with `CRT3S_ENABLED=true`.
+
+| Variable | Default | Description |
+| -------- | ------- | ----------- |
+| `CRT3S_MAGIC_BASE` | `860000` | Magic number base |
+| `CRT3S_C1_MAX_WICK` | `0.30` | C1's upper + lower wick ÷ its range, at most |
+| `CRT3S_C2_MAX_RETRACE` | `0.40` | How far into C1 (÷ its range, from the swept side) C2 may reach |
+| `CRT3S_BE_LEVEL` | `0.50` | Break-even + partial at this fraction of C1's range from the swept side |
+| `CRT3S_<X>` | the `CRT_<X>` value | Any crt3 setting (`SYMBOLS`, `PARTIAL_PCT`, `MIN_RR`, …) |
+
 ## Candle 2 Bot (TTrades fractal model)
 
 `app/candle2_fractal_bot.py` (`c2f`) trades the **reversal candle** of the TTrades fractal
@@ -475,7 +505,7 @@ Generic routes work for every bot, including future ones:
 | POST | `/bots/<name>/start` | Start new entries |
 | POST | `/bots/<name>/stop` | Stop new entries (open trades keep SL/TP, break-even still runs) |
 
-Bot names: `crt3`, `crt2`, `crt3t`, `crt2t`, `c2f`, `macd`, `donchian`, `donchian_pt`. The older `/bot/*` and `/bot2/*` routes still work.
+Bot names: `crt3`, `crt2`, `crt3t`, `crt2t`, `c2f`, `crt3s`. The older `/bot/*` and `/bot2/*` routes still work.
 The easier way is the **Start / Stop** button on each bot's card in the dashboard (see below).
 
 ## Backtesting
@@ -489,42 +519,9 @@ cd tools/backtest && python3 -m venv venv && venv/bin/pip install -r requirement
 ./fetch_fxcm.sh && venv/bin/python backtest.py
 ```
 
-## Indicator Bots
+## Exits: partial close and trailing stop
 
-`app/indicator_bots.py` runs indicator strategies, **each as its own bot**,
-for side-by-side testing on a demo account. They all use the same rules so the comparison is
-fair:
-
-- **Timeframes:** H4, H1, M30 and M15, with the same rules as the CRT bots. H4 is checked
-  first, one trade per symbol, and an opposite higher-timeframe signal closes the trade and
-  enters. The dashboard's *bot × timeframe* table shows which timeframe works.
-- **Signals:** read on each closed candle, entered within 5 minutes of the close.
-- **Risk:** SL = 1.5 × ATR(14); TP = 2 × the SL distance.
-  No break-even, unless set with `IND_<KEY>_BE_R`.
-
-| Bot | Rule |
-| --- | ---- |
-| `macd` MACD + 200 EMA | MACD crosses its signal below zero (buy) / above zero (sell), with the EMA 200 trend |
-| `donchian` Donchian breakout | Close above the previous 20-candle high / below the low |
-| `donchian_pt` Donchian + trail | Same signal as `donchian`; at 1R close 50% and move SL to break-even, then trail the rest 2R behind price, TP at 10R |
-
-`donchian_pt` races `donchian` on the same signals, so the dashboard shows whether letting
-winners run beats the fixed 1:2 target. With `IND_ALL_ENABLED=true` it starts trading on its
-first boot; stop it on the dashboard if you don't want it.
-
-Turn them all on with `IND_ALL_ENABLED=true`, or one at a time with `IND_<KEY>_ENABLED=true`
-(e.g. `IND_MACD_ENABLED`). Per-bot settings: `IND_<KEY>_SYMBOLS`, `_TFS`, `_LOT`, `_SL_ATR`,
-`_RR`, `_MAGIC_BASE` (default `macd` 804000, `donchian` 808000, `donchian_pt` 811000), `_MAX_SIGNAL_AGE`, `_MIN_SL_SPREADS`,
-`_POLL_INTERVAL`, and the exit options `_BE_R` (break-even at this many R in profit),
-`_PARTIAL_PCT` (% closed at that moment) and `_TRAIL_R` (trailing distance in R), e.g.
-`IND_DONCHIAN_TRAIL_R=2`. Start and stop each one with `/bots/<key>/start|stop`.
-
-The dashboard's **leaderboard** ranks every bot, and each bot card has its own equity curve.
-Judge them on average R over 100+ trades, not on win rate or the first few weeks.
-
-### Exits: partial close and trailing stop
-
-Every bot can use these, set per bot (`CRT_*`, `CRT2_*`, `IND_<KEY>_*`):
+Every bot can use these, set per bot (e.g. `CRT_*`, `CRT2_*`):
 
 | Setting | What happens |
 | ------- | ------------ |
@@ -585,7 +582,7 @@ All bot logic lives in `backend/mt5/app/`:
 | `candle_two_bot.py` | 2-candle CRT strategy only |
 | `candle2_fractal_bot.py` | TTrades candle 2: D1/H4 sweep, lower-TF CISD entry, wick-size target |
 | `crt_trend_bots.py` | Both CRT strategies with the higher-timeframe trend filter, as separate bots |
-| `indicator_bots.py` | The indicator strategies (MACD, Donchian, Donchian + trail) |
+| `crt3_strict_bot.py` | Strict 3-candle CRT: strong C1, C2 within 40 % of C1, break-even at C1's 50 % |
 | `mt5_guard.py` | The lock that serializes MT5 calls across bot threads |
 | `risk_guard.py` | Account-wide limits for all bots: max daily loss (closes everything and pauses until the next day) and max open trades |
 
@@ -638,7 +635,8 @@ detail. It grows by roughly 60 MB a year, almost all of it raw events.
 
 ## Telegram alerts
 
-Every **rejected** order and bot **error** is sent to a Telegram chat
+Every **rejected** order, every **failed** close / partial close / break-even or trailing SL
+move, and every bot **error** is sent to a Telegram chat
 (`app/telegram_alert.py`), so a problem that keeps rejecting trades — Algo Trading off,
 market closed, invalid stops — is seen without opening the logs:
 
@@ -661,8 +659,14 @@ waits on Telegram.
 | -------- | ------- | ----------- |
 | `TELEGRAM_BOT_TOKEN` | — | Bot token (alerts off when empty) |
 | `TELEGRAM_CHAT_ID` | — | Chat to send to |
-| `TELEGRAM_STATUSES` | `rejected,error` | Event statuses that alert (e.g. add `opened`) |
+| `TELEGRAM_STATUSES` | `rejected,failed,error` | Event statuses that alert (e.g. add `opened`) |
 | `TELEGRAM_REPEAT_MINUTES` | `30` | Minutes before the same problem is sent again |
+| `TELEGRAM_STARTUP_MESSAGE` | `true` | Send "✅ MT5 bots started" on every app start, to check the setup |
+
+**No messages?** Look for `telegram:` in `config/flask.log`. `alerts off (… not set)` = the
+variable didn't reach the container (check `.env`, then rebuild `mt5`). `send failed (HTTP 401
+Unauthorized)` = wrong token; `HTTP 400 Bad Request: chat not found` = wrong chat id, or `/start`
+was never sent to the bot. If `.env` still has `TELEGRAM_STATUSES=rejected,error`, add `failed`.
 
 ## Bot Dashboard
 
@@ -679,6 +683,11 @@ waits on Telegram.
 - **equity & drawdown**: the running net, its high, and how far it fell from it (max / current drawdown in $ and % of balance, longest time below a high, the deepest drawdowns as a table)
 - **why setups failed**: skip reasons plus broker rejections with their retcode and meaning (e.g. `rejected 10027: Algo Trading disabled in the terminal`)
 - **bot log**: the newest `BOT_DB_RECENT_EVENTS` (default 300) events — rejected & errors, skipped, trades, or all — refreshed with the snapshot
+- **export closed trades** (*Recent closed trades* card): **CSV** or **JSON (for AI)** of every closed trade
+  matching the current filters, oldest first. Each row has signal / open / close / break-even times in
+  UTC (`2026-10-08T07:15:00Z`) and broker time with its offset, duration, open weekday & hour,
+  prices, SL/TP distance, planned R:R, spread, exit reason, outcome, profit, commission, swap, net and R.
+  The JSON adds field notes and a summary so it can be pasted straight into an AI chat.
 
 **There is no API behind it.** The `dashboard` container (nginx) serves a static page and
 the read-only `dashboard.db` snapshot. The page loads the database into the browser with

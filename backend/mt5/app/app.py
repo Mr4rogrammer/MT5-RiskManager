@@ -22,9 +22,10 @@ from routes.riskValue import risk_bp
 from routes.bot import bot_bp
 from crt_bot import start_crt_bot
 from candle_two_bot import start_candle_two_bot
-from indicator_bots import start_indicator_bots
 from crt_trend_bots import start_crt_trend_bots
 from candle2_fractal_bot import start_candle2_fractal_bot
+from crt3_strict_bot import start_crt3_strict_bot
+import telegram_alert
 
 load_dotenv()
 logging.basicConfig(
@@ -65,9 +66,10 @@ app.register_blueprint(bot_bp)
 if __name__ == '__main__':
     if not mt5.initialize():
         logger.error("Failed to initialize MT5.")
+    telegram_alert.startup()
     start_crt_bot()
     start_candle_two_bot()
-    start_indicator_bots()
     start_crt_trend_bots()
     start_candle2_fractal_bot()
+    start_crt3_strict_bot()
     app.run(host='0.0.0.0', port=int(os.environ.get('MT5_API_PORT', 5001)))
