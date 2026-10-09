@@ -151,7 +151,7 @@ def _bot_magics():
     for bot in list(_bots.values()):
         if bot._started and "magic_base" in bot.settings:
             base = bot.settings["magic_base"]
-            magics.update(base + m for m in (15, 30, 60, 240, 1440))
+            magics.update(base + m for m in (15, 30, 60, 240, 1440, 10080))
     return magics
 
 

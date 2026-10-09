@@ -494,6 +494,29 @@ Session-based entry timeframes and SMT are not part of it. Signals record the wi
 | `C2F_BE_TRIGGER` / `C2F_PARTIAL_PCT` | `0.5` / `50` | Break-even point (fraction of entry→TP) and % closed there |
 | `C2F_MIN_RR`, `C2F_MIN_SL_SPREADS`, `C2F_SL_BUFFER_SPREADS`, `C2F_LOT`, `C2F_SYMBOLS`, … | as the CRT bots | Shared filters and sizing |
 
+## EJPC3 Bot (CRT + CISD multi-timeframe)
+
+`app/ejpc3_bot.py` ports the TradingView "CRT + CISD Multi-Timeframe" indicator. Fixed pairs
+(entry → HTF): M1→M15, M5→H1, M15→H4, H1→D1, H4→W1. On the HTF, C3 is the running candle, C2
+the one that just closed and C1 the one before.
+
+1. **CRT:** C2 sweeps one side of C1 and closes back inside C1.
+2. **C2 CISD (required):** on the entry timeframe, inside C2, a close through the open of the candle series that delivered the sweep extreme.
+3. **C3 CISD (entry):** inside C3, a close through the open of a fresh opposite run that began after the C2 CISD; the first one per C3 is entered at market. Dead if C3 breaks C2's extreme first.
+4. **SL** beyond the C3 CISD swing (+ spread for SELL). **TP** at STD −2 of the C2 CISD leg. Half is closed and SL moved to break-even at `EJPC3_BE_TRIGGER` of the way to TP.
+
+Size is `BOTS_RISK_PCT` (0.5% by default). Off by default; default symbols are the six major forex pairs (no gold). SMT and the T-Spot are not used.
+
+| Variable | Default | Description |
+| -------- | ------- | ----------- |
+| `EJPC3_ENABLED` | `false` | Start trading on boot |
+| `EJPC3_SYMBOLS` | six majors | Symbols to trade |
+| `EJPC3_TFS` | `W1,D1,H4,H1,M15` | HTFs to trade |
+| `EJPC3_STD_MULT` | `2` | STD multiple used for TP |
+| `EJPC3_MAGIC_BASE` | `870000` | Magic base (+ HTF minutes) |
+| `EJPC3_BE_TRIGGER` / `EJPC3_PARTIAL_PCT` | `0.5` / `50` | Break-even point and % closed there |
+| `EJPC3_MAX_SIGNAL_AGE`, `EJPC3_MIN_RR`, `EJPC3_MIN_SL_SPREADS`, `EJPC3_SL_BUFFER_SPREADS`, `EJPC3_LOT`, … | `120`, `0`, `3`, `0`, `0.01` | Shared filters and sizing |
+
 ## Controlling any bot
 
 Generic routes work for every bot, including future ones:

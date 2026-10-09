@@ -25,6 +25,7 @@ from candle_two_bot import start_candle_two_bot
 from crt_trend_bots import start_crt_trend_bots
 from candle2_fractal_bot import start_candle2_fractal_bot
 from crt3_strict_bot import start_crt3_strict_bot
+from ejpc3_bot import start_ejpc3_bot
 import telegram_alert
 
 load_dotenv()
@@ -72,4 +73,5 @@ if __name__ == '__main__':
     start_crt_trend_bots()
     start_candle2_fractal_bot()
     start_crt3_strict_bot()
+    start_ejpc3_bot()
     app.run(host='0.0.0.0', port=int(os.environ.get('MT5_API_PORT', 5001)))
